@@ -41,17 +41,18 @@ if df.empty:
     st.info("No assets past the trigger right now.")
     st.stop()
 
-df = rank_1_to_5(df, cfg["weights"])
+df = rank_1_to_5(df, cfg["weights"], cfg)
 if min_rvol:
     df = df[df["rvol"].fillna(0) >= min_rvol]
 
-act = df[df["act"] != ""]
+act = df[df["act"]]
 if len(act):
-    st.error(f"🔥 ACT NOW: {', '.join(act['ticker'])} — score ≥80%, RVOL ≥3x, above 9EMA+VWAP on all TFs")
+    st.error("🔥 ACT NOW (potential ≥70): " + ", ".join(f"{t} {s}" for t, s in zip(act["ticker"], act["side"])))
+df["ticker"] = df.apply(lambda r: ("🔥 " if r["act"] else "") + r["ticker"], axis=1)
 
 df["flags_txt"] = df["flags"].apply(lambda f: " | ".join(f) if isinstance(f, list) else "")
-cols = ["act", "score_pct", "asset", "ticker", "change_pct", "price", "volume", "float_pct",
-        "funding_8h_pct", "funding_label", "flags_txt", "rvol", "float_shares", "news_link",
+cols = ["potential", "side", "ticker", "asset", "change_pct", "price", "volume", "float_pct",
+        "funding_8h_pct", "funding_label", "flags_txt", "why", "rvol", "score_pct", "float_shares", "news_link",
         "ema9_5m_pct", "vwap_5m_pct", "ema9_30m_pct", "vwap_30m_pct", "ema9_1h_pct", "vwap_1h_pct",
         "liq_above_pct", "liq_below_pct"]
 rank_cols = [c for c in df.columns if c.startswith("rank_")]
@@ -63,8 +64,12 @@ def _c(v, rules):
         if cond(v): return style
     return ""
 G, LG, R, O = "background-color:#1b7f3b;color:white", "background-color:#a8dcb5", "background-color:#c62828;color:white", "background-color:#f6b26b"
-styled = show.style
-if "score_pct" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 80, G), (lambda x: x >= 60, LG), (lambda x: x < 40, "background-color:#eeeeee")]), subset=["score_pct"])
+PCT = [c for c in show.columns if c.endswith("_pct")]
+fmt = {c: "{:.1f}%" for c in PCT}
+fmt.update({"volume": "{:,.0f}", "float_shares": "{:,.0f}", "potential": "{:.0f}", "score_pct": "{:.0f}%",
+            "funding_8h_pct": "{:+.3f}%", "price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}"})
+styled = show.style.format({k: v for k, v in fmt.items() if k in show.columns}, na_rep="—")
+if "potential" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 70, G), (lambda x: x >= 50, LG), (lambda x: x < 30, "background-color:#eeeeee")]), subset=["potential"])
 if "change_pct" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 30, G), (lambda x: x > 0, LG), (lambda x: x <= -30, R), (lambda x: x < 0, "background-color:#f4a6a6")]), subset=["change_pct"])
 if "rvol" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 5, G), (lambda x: x >= 3, LG), (lambda x: x < 3, "background-color:#f4a6a6")]), subset=["rvol"])
 if "float_pct" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x < 30, O)]), subset=["float_pct"])
@@ -77,21 +82,21 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
     column_config={
-        "news_link": st.column_config.LinkColumn("News", display_text="open"),
-        "act": st.column_config.TextColumn("", width="small"),
+        "potential": "Potential", "side": "Side", "ticker": "Ticker", "asset": "Asset", "change_pct": "Δ %",
+        "price": "Price", "volume": "Volume", "float_pct": "Float %", "float_shares": "Float (shares)",
+        "funding_8h_pct": "Funding 8h", "funding_label": "Funding", "rvol": "RVOL (5d)", "score_pct": "Rel. score",
+        "why": st.column_config.TextColumn("Why", width="large"),
         "flags_txt": st.column_config.TextColumn("Flags", width="large"),
-        "score_pct": st.column_config.NumberColumn("Score %", format="%.0f%%"),
-        "change_pct": st.column_config.NumberColumn("Δ %", format="%.1f%%"),
-        "funding_8h_pct": st.column_config.NumberColumn("Funding 8h", format="%.3f%%"),
-        "rvol": st.column_config.NumberColumn("RVOL (5d)", format="%.1fx"),
-        "float_shares": st.column_config.NumberColumn("Float", format="%.0f"),
-        "float_pct": st.column_config.NumberColumn("Float %", format="%.0f%%"),
+        "news_link": st.column_config.LinkColumn("News", display_text="open"),
+        "ema9_5m_pct": "EMA9 5m", "vwap_5m_pct": "VWAP 5m", "ema9_30m_pct": "EMA9 30m", "vwap_30m_pct": "VWAP 30m",
+        "ema9_1h_pct": "EMA9 1h", "vwap_1h_pct": "VWAP 1h", "liq_above_pct": "Liq above", "liq_below_pct": "Liq below",
     },
 )
 
 st.subheader("Risk checklist")
 for r in df.to_dict("records"):
-    with st.expander(f"{r.get('act','')} {r['ticker']} · {r['change_pct']:+.1f}% · score {r['score_pct']:.0f}%"):
+    with st.expander(f"{r['ticker']} · {r['side']} · {r['change_pct']:+.1f}% · potential {r['potential']:.0f}"):
+        st.caption(r.get("why", ""))
         if r.get("news"):
             st.markdown(f"**News:** [{r['news']}]({r['news_link']})")
         for f in r.get("flags", []):
