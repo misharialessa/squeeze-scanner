@@ -1,0 +1,24 @@
+refresh_seconds: 60
+crypto:
+  enabled: true
+  source: hyperliquid          # HL perps only
+  move_trigger_pct: 10
+  heavy_move_pct: 30           # float/funding get extra weight above this
+  funding_high_pct: 0.10       # per 8h-equivalent
+  funding_extreme_pct: 0.40
+stocks:
+  enabled: true
+  max_price: 20
+  max_float_m: 50
+  move_trigger_pct: 10
+rvol:
+  lookback_days: 5
+  shortlist_multiple: 3
+  strong_multiple: 5
+timeframes: ["5m", "30m", "1h"]
+weights:                       # composite score = sum(rank * weight)
+  move: 1.0
+  rvol: 1.5
+  extension: 1.0
+  funding: 1.0
+  liquidation: 1.0
