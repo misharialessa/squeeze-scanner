@@ -25,13 +25,22 @@ def movers(max_price: float = 20, max_float_m: float = 50, min_move: float = 10)
     if not frames:
         return pd.DataFrame()
     df = pd.concat(frames)
+    # Finviz renames/reorders columns at times — match by keyword, case-insensitive
+    def col(*keys):
+        for c in df.columns:
+            if any(k in str(c).lower() for k in keys):
+                return df[c]
+        return None
+    tk, pr, ch, vo = col("ticker"), col("price"), col("change"), col("volume")
+    if tk is None or ch is None:
+        return pd.DataFrame()        # bot-wall or layout change → no stocks this refresh, app keeps running
     out = pd.DataFrame({
-        "ticker": df["Ticker"],
-        "price": pd.to_numeric(df["Price"], errors="coerce"),
-        "change_pct": df["Change"].astype(str).str.rstrip("%").astype(float),
-        "volume": pd.to_numeric(df["Volume"].astype(str).str.replace(",", ""), errors="coerce"),
+        "ticker": tk,
+        "price": pd.to_numeric(pr, errors="coerce") if pr is not None else None,
+        "change_pct": pd.to_numeric(ch.astype(str).str.rstrip("%").str.replace(",", ""), errors="coerce"),
+        "volume": pd.to_numeric(vo.astype(str).str.replace(",", ""), errors="coerce") if vo is not None else None,
     })
-    return out.dropna(subset=["price"]).reset_index(drop=True)
+    return out.dropna(subset=["change_pct"]).reset_index(drop=True)
 
 
 def detail(ticker: str) -> dict:
