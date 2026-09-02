@@ -8,6 +8,8 @@ from core.scan import run
 from core.metrics import rank_1_to_5
 
 load_dotenv()
+import os
+for k, v in st.secrets.items(): os.environ.setdefault(k, str(v))
 cfg = yaml.safe_load(open("config.yaml"))
 
 st.set_page_config(page_title="Squeeze Scanner", layout="wide")
