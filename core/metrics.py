@@ -63,15 +63,20 @@ def rank_1_to_5(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
     if df.empty:
         return df
     score = pd.Series(0.0, index=df.index)
+    max_possible = pd.Series(0.0, index=df.index)   # per-row, so stocks (no funding/liq) aren't buried
     for name, (col, tf) in RANK_RULES.items():
         if col not in df or df[col].notna().sum() == 0:
             continue
         s = tf(pd.to_numeric(df[col], errors="coerce"))
         r = s.rank(pct=True).apply(lambda p: min(5, max(1, int(p * 5 + 0.999))) if p == p else None)
         df[f"rank_{name}"] = r
-        score += r.fillna(0) * weights.get(name, 1.0)
+        w = weights.get(name, 1.0)
+        score += r.fillna(0) * w
+        max_possible += r.notna() * 5 * w
     df["score"] = score.round(2)
-    return df.sort_values("score", ascending=False).reset_index(drop=True)
+    df["score_pct"] = (score / max_possible.replace(0, float("nan")) * 100).round(0)
+    df["act"] = ((df["score_pct"] >= 80) & (df["rvol"].fillna(0) >= 3) & df.get("above_all", False).fillna(False)).map({True: "🔥 ACT", False: ""})
+    return df.sort_values("score_pct", ascending=False).reset_index(drop=True)
 
 
 # ---------- risk checklist ----------
