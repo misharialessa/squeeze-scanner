@@ -64,10 +64,12 @@ def scan_stocks(cfg: dict) -> list[dict]:
 
 def run(cfg: dict) -> pd.DataFrame:
     rows = []
-    if cfg["crypto"]["enabled"]:
-        rows += scan_crypto(cfg)
-    if cfg["stocks"]["enabled"]:
-        rows += scan_stocks(cfg)
+    for enabled, fn in ((cfg["crypto"]["enabled"], scan_crypto), (cfg["stocks"]["enabled"], scan_stocks)):
+        if enabled:
+            try:
+                rows += fn(cfg)
+            except Exception as e:      # one source down must never take the dashboard down
+                rows.append({"asset": fn.__name__.split("_")[1], "ticker": "SOURCE ERROR", "change_pct": 0, "error": str(e)[:120]})
     df = pd.DataFrame(rows)
     if not df.empty:
         df["flags"] = [checklist(r, cfg) for r in df.to_dict("records")]
