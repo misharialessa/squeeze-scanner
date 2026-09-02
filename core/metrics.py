@@ -32,7 +32,9 @@ def m_extension(hit, ctx):
         out[f"vwap_{tf}_pct"] = e["vwap_pct"]
     vals = [v for k, v in out.items() if v is not None]
     out["extension_avg_pct"] = round(sum(vals) / len(vals), 2) if vals else None
-    out["above_all"] = all(v is not None and v > 0 for v in out.values() if isinstance(v, (int, float))) if vals else False
+    out["above_all"] = all(v > 0 for v in vals) if vals else False
+    out["below_all"] = all(v < 0 for v in vals) if vals else False
+    out["tfs_confirming"] = (sum(v > 0 for v in vals) if (sum(v > 0 for v in vals) >= len(vals) / 2) else sum(v < 0 for v in vals)) if vals else 0
     return out
 
 
@@ -59,7 +61,8 @@ RANK_RULES = {
 }
 
 
-def rank_1_to_5(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
+def rank_1_to_5(df: pd.DataFrame, weights: dict, cfg: dict = None) -> pd.DataFrame:
+    cfg = cfg or {"crypto": {"funding_high_pct": 0.1, "funding_extreme_pct": 0.4}}
     if df.empty:
         return df
     score = pd.Series(0.0, index=df.index)
@@ -75,8 +78,54 @@ def rank_1_to_5(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
         max_possible += r.notna() * 5 * w
     df["score"] = score.round(2)
     df["score_pct"] = (score / max_possible.replace(0, float("nan")) * 100).round(0)
-    df["act"] = ((df["score_pct"] >= 80) & (df["rvol"].fillna(0) >= 3) & df.get("above_all", False).fillna(False)).map({True: "🔥 ACT", False: ""})
-    return df.sort_values("score_pct", ascending=False).reset_index(drop=True)
+    pot = pd.DataFrame([potential(r, cfg) for r in df.to_dict("records")], index=df.index)
+    df[["side", "potential", "why"]] = pot
+    df["act"] = df["potential"] >= 70
+    return df.sort_values(["potential", "score_pct"], ascending=False).reset_index(drop=True)
+
+
+# ---------- absolute trade-potential score (0–100) ----------
+# Direction = sign of the move. Points only for evidence aligned with that direction.
+
+def _v(x):
+    """None for missing/NaN, else the value."""
+    return None if x is None or (isinstance(x, float) and x != x) else x
+
+
+def potential(hit: dict, cfg: dict) -> dict:
+    hit = {k: _v(v) for k, v in hit.items()}
+    chg = hit.get("change_pct") or 0
+    side = "LONG" if chg > 0 else "SHORT"
+    pts, why = 0, []
+    rv = hit.get("rvol")
+    if rv is not None:
+        p = 25 if rv >= 5 else 15 if rv >= 3 else 5 if rv >= 2 else -10
+        pts += p; why.append(f"RVOL {rv}x {p:+d}")
+    a = abs(chg)
+    p = 15 if 10 <= a < 30 else 10 if a >= 30 else 0
+    pts += p; why.append(f"move {a:.0f}% {p:+d}")
+    conf = hit.get("above_all") if side == "LONG" else hit.get("below_all")
+    n = hit.get("tfs_confirming") or 0
+    p = 20 if conf else 8 if n >= 2 else 0
+    pts += p; why.append(f"EMA/VWAP {n}/3 TFs {p:+d}")
+    f = hit.get("funding_8h_pct")
+    if f is not None:
+        hi, ex = cfg["crypto"]["funding_high_pct"], cfg["crypto"]["funding_extreme_pct"]
+        aligned = -f if side == "LONG" else f          # LONG wants shorts paying (f<0); SHORT wants longs paying
+        p = 20 if aligned >= ex else 12 if aligned >= hi else -12 if aligned <= -ex else -6 if aligned <= -hi else 0
+        pts += p; why.append(f"funding {f:+.3f}% {p:+d}")
+    fl = hit.get("float_pct")
+    if fl is not None and fl < 30:
+        p = 10 if side == "LONG" else -10
+        pts += p; why.append(f"low float {p:+d}")
+    liq = hit.get("liq_above_pct") if side == "LONG" else hit.get("liq_below_pct")
+    opp = hit.get("liq_below_pct") if side == "LONG" else hit.get("liq_above_pct")
+    if liq is not None and (opp is None or liq < opp):
+        p = 10 if liq <= 5 else 5
+        pts += p; why.append(f"liq cluster {liq}% ahead {p:+d}")
+    if hit.get("news_link"):
+        pts += 10; why.append("catalyst +10")
+    return {"side": side, "potential": max(0, min(100, pts)), "why": " · ".join(why)}
 
 
 # ---------- risk checklist ----------
