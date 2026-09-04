@@ -22,6 +22,21 @@ def _impulse(b5, cfg):
 
 # ---------------- crypto ----------------
 
+def _oi_change(ledger, coin, oi_now, now):
+    """OI % change vs ~1h ago from the ledger's OI trail."""
+    trail = ledger.setdefault(("oi", coin), [])
+    trail.append((now, oi_now))
+    ledger[("oi", coin)] = [(t, v) for t, v in trail if now - t <= 3900]
+    old = [(t, v) for t, v in ledger[("oi", coin)] if now - t >= 3000]
+    return round((oi_now / old[0][1] - 1) * 100, 2) if old and old[0][1] else None
+
+
+def _btc_move(ledger, horizon):
+    hist = ledger.get("BTC") or []
+    if len(hist) < 2: return None
+    return round((hist[-1][1] / hist[0][1] - 1) * 100, 2)
+
+
 def crypto_candidates(cfg, ledger: dict, snap: pd.DataFrame) -> list[str]:
     """Assets whose mid moved ≥min_move% in the last ~10 min per the price ledger, plus optional daily movers.
     ledger: {coin: [(ts, price), ...]} maintained by the app across refreshes."""
@@ -36,6 +51,8 @@ def crypto_candidates(cfg, ledger: dict, snap: pd.DataFrame) -> list[str]:
         old = min((p for t, p in ledger[coin]), default=px)
         if old and (px / old - 1) * 100 >= cfg["impulse"]["min_move_pct"] * 0.8:   # slight slack; candles confirm
             cands.add(coin)
+    for _, r in snap.iterrows():
+        _oi_change(ledger, r["ticker"], r["open_interest"], now)
     if len(ledger.get(next(iter(mids)), [])) <= 1:                                     # cold start → seed
         cands |= set(snap.nlargest(cfg["impulse"]["cold_start_assets"], "vol_24h_usd")["ticker"])
     if cfg["daily_movers"]["enabled"]:
@@ -80,6 +97,10 @@ def scan_crypto(cfg, ledger: dict, diag: dict) -> list[dict]:
             continue
         hit = snap.loc[coin].to_dict(); hit["ticker"] = coin; hit["asset"] = "crypto"; hit["trigger"] = "impulse" if imp else "daily"
         hit.update(imp or {})
+        trail = ledger.get(("oi", coin)) or []
+        old = [(t, v) for t, v in trail if time.time() - t >= 3000]
+        hit["oi_chg_1h_pct"] = round((trail[-1][1] / old[0][1] - 1) * 100, 2) if trail and old and old[0][1] else None
+        hit["btc_move_pct"] = _btc_move(ledger, cfg["impulse"]["candles"] * 300)
         ctx = {"config": cfg, "bars_5m": b5, "bars_30m": resample(b5, "30min"), "bars_1h": resample(b5, "1h")}
         today = b5[b5.index.date == b5.index[-1].date()]["volume"].sum()
         hit["volume"] = round(float(today), 2)

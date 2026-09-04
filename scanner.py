@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from streamlit_autorefresh import st_autorefresh
 from core.scan import run
 from core.metrics import rank_1_to_5
-from core import tracker
+from core import tracker, persist
 from sources import hyperliquid as hl, stocks as stock_src
 
 load_dotenv()
@@ -25,16 +25,25 @@ with st.sidebar:
     cfg["crypto"]["enabled"] = st.checkbox("Crypto (Hyperliquid perps)", cfg["crypto"]["enabled"])
     cfg["stocks"]["enabled"] = st.checkbox("US small caps", cfg["stocks"]["enabled"])
     st.subheader("Impulse trigger (5m)")
-    cfg["impulse"]["min_move_pct"] = st.number_input("Min move % (1–2 candles)", 0.2, 20.0, float(cfg["impulse"]["min_move_pct"]), 0.1)
-    cfg["impulse"]["candles"] = st.slider("Candles compared (spike window)", 1, 6, int(cfg["impulse"]["candles"]))
-    cfg["impulse"]["vol_multiple"] = st.slider("Candle vol ≥ x avg", 2.0, 5.0, float(cfg["impulse"]["vol_multiple"]), 0.5)
-    cfg["impulse"]["avg_lookback_days"] = st.slider("Avg over days", 2, 4, int(cfg["impulse"]["avg_lookback_days"]))
-    cfg["retain_hours"] = st.number_input("Keep hits on screen (hours)", 1, 168, int(cfg["retain_hours"]))
+    cfg["impulse"]["min_move_pct"] = st.number_input("Min move % over the window", 0.05, 100.0, float(cfg["impulse"]["min_move_pct"]), 0.05, format="%.2f")
+    cfg["impulse"]["candles"] = int(st.number_input("Candles in window (5m each)", 1, 48, int(cfg["impulse"]["candles"])))
+    cfg["impulse"]["vol_multiple"] = st.number_input("Spike candle vol ≥ × avg", 1.0, 100.0, float(cfg["impulse"]["vol_multiple"]), 0.5)
+    cfg["impulse"]["avg_lookback_days"] = int(st.number_input("Avg volume over days (max 15)", 1, 15, int(cfg["impulse"]["avg_lookback_days"])))
+    st.subheader("Journal")
+    cfg["retain_hours"] = int(st.number_input("Keep hits on screen (hours)", 1, 720, int(cfg["retain_hours"])))
+    st.caption(persist.status())
+    if st.button("Push journal to GitHub now"):
+        err = tracker.save(hit_store(), force_remote=True)
+        st.error(err) if err else st.success("Pushed")
     if st.button("Clear journal"):
-        hit_store().clear(); tracker.save(hit_store())
-    cfg["daily_movers"]["enabled"] = st.checkbox("Also show 24h/day ≥10% movers", cfg["daily_movers"]["enabled"])
+        hit_store().clear(); tracker.save(hit_store(), force_remote=True)
+    cfg["daily_movers"]["enabled"] = st.checkbox("Also show 24h/day movers", cfg["daily_movers"]["enabled"])
+    if cfg["daily_movers"]["enabled"]:
+        cfg["daily_movers"]["move_pct"] = st.number_input("Daily move ≥ %", 0.5, 500.0, float(cfg["daily_movers"]["move_pct"]), 0.5)
+    cfg["stocks"]["min_day_change_pct"] = st.number_input("Stocks: day change ≥ % (pre-filter)", 0.0, 100.0, float(cfg["stocks"]["min_day_change_pct"]), 0.5)
     st.caption("CMC: " + ("✅ key set" if os.getenv("CMC_API_KEY") else "not set"))
-    min_rvol = st.number_input("Min RVOL to show", 0.0, 20.0, 0.0)
+    min_rvol = st.number_input("Min RVOL to show", 0.0, 1000.0, 0.0)
+    min_potential = st.number_input("Min entry score to show", 0, 100, 0)
     auto = st.toggle("Auto-refresh", True)
     if auto:
         st_autorefresh(interval=cfg["refresh_seconds"] * 1000, key="tick")
@@ -63,9 +72,13 @@ except Exception:
 store, now_ts = hit_store(), time.time()
 new_rows = [] if new.empty else new.to_dict("records")
 if new_rows:
-    new_ranked = rank_1_to_5(new.copy(), cfg["weights"], cfg)           # freeze side/potential at entry
+    for r in new_rows:                                   # distinct-impulse count so far (incl. this one) feeds the score
+        prev = store.get((r.get("asset"), r.get("ticker")), {})
+        r["impulses"] = len(set(prev.get("impulse_times") or []) | ({str(r["impulse_time"])} if r.get("impulse_time") is not None else set()))
+    new_ranked = rank_1_to_5(pd.DataFrame(new_rows), cfg["weights"], cfg)
     new_rows = new_ranked.to_dict("records")
 tracker.ingest(store, new_rows, now_ts)
+# entry_* stays frozen at the FIRST fire — no upgrades from later information
 prices = {}
 try:
     mids = hl.all_mids()
@@ -111,7 +124,8 @@ if df.empty:
 
 df["potential"] = pd.to_numeric(df["entry_potential"], errors="coerce")
 df["side"] = df["entry_side"]
-df["act"] = df["potential"] >= 70
+df["act"] = (df["potential"] >= 60) & (df["side"] == "LONG")
+df["confirmed"] = pd.to_numeric(df.get("impulses", 1), errors="coerce").fillna(1) >= 2
 df = df.sort_values(["live", "first_seen"], ascending=[False, False]).reset_index(drop=True)
 
 # ---- effectiveness ----
@@ -124,10 +138,12 @@ with st.expander("📊 Scanner effectiveness (signed: + means the original call 
     st.download_button("Download journal CSV", df.drop(columns=["flags"], errors="ignore").to_csv(index=False), "signals_journal.csv")
 if min_rvol:
     df = df[df["rvol"].fillna(0) >= min_rvol]
+if min_potential:
+    df = df[df["potential"].fillna(0) >= min_potential]
 
 act = df[df["act"]]
 if len(act):
-    st.error("🔥 ACT NOW (potential ≥70): " + ", ".join(f"{t} {s}" for t, s in zip(act["ticker"], act["side"])))
+    st.error("🔥 IGNITION (entry score ≥60, long): " + ", ".join(f"{t} {s}" for t, s in zip(act["ticker"], act["side"])))
 dt = df[df["side"] == "NONE"]
 if len(dt):
     st.warning("🚫 DON'T TOUCH: " + ", ".join(dt["ticker"]))
@@ -139,7 +155,8 @@ if "impulse_time" in df:
     df["impulse_time"] = pd.to_datetime(df["impulse_time"], utc=True, errors="coerce").dt.tz_convert(tz).dt.strftime("%H:%M")
 df["ticker"] = df.apply(lambda r: ("🟢 " if r.get("live") else "") + str(r["ticker"]), axis=1)
 cols = ["potential", "side", "ticker", "asset", "first_seen_local", "age_min", "entry_price", "cur_price", "perf_pct",
-        "mfe_pct", "mae_pct", "perf_15m", "perf_1h", "perf_4h", "perf_24h", "fires", "impulse_time", "impulse_pct", "impulse_vol_x", "change_pct", "price", "volume",
+        "mfe_pct", "mae_pct", "perf_15m", "perf_1h", "perf_4h", "perf_24h", "confirmed", "impulses", "impulse_time",
+        "new_24h_high", "compression", "vol_rank_24h", "chg_24h_at_fire_pct", "oi_chg_1h_pct", "btc_move_pct", "impulse_pct", "impulse_vol_x", "change_pct", "price", "volume",
         "float_pct", "funding_8h_pct", "funding_label", "short_risk", "macd_long_ok", "flags_txt", "why",
         "rvol", "market_cap_usd", "top_markets", "score_pct", "float_shares", "news_link",
         "ema9_5m_pct", "vwap_5m_pct", "ema9_30m_pct", "vwap_30m_pct", "ema9_1h_pct", "vwap_1h_pct"]
@@ -154,7 +171,7 @@ def _c(v, rules):
 G, LG, R, O = "background-color:#1b7f3b;color:white", "background-color:#a8dcb5", "background-color:#c62828;color:white", "background-color:#f6b26b"
 PCT = [c for c in show.columns if c.endswith("_pct")]
 fmt = {c: "{:.1f}%" for c in PCT}
-fmt.update({"entry_price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}", "cur_price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}",
+fmt.update({"compression": "{:.2f}x", "vol_rank_24h": "#{:.0f}", "entry_price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}", "cur_price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}",
             "perf_pct": "{:+.1f}%", "mfe_pct": "{:+.1f}%", "mae_pct": "{:+.1f}%", "perf_15m": "{:+.1f}%", "perf_1h": "{:+.1f}%", "perf_4h": "{:+.1f}%", "perf_24h": "{:+.1f}%",
             "volume": "{:,.0f}", "float_shares": "{:,.0f}", "market_cap_usd": "{:,.0f}", "liq_above_usd": "{:,.0f}", "liq_below_usd": "{:,.0f}", "impulse_vol_x": "{:.1f}x", "potential": "{:.0f}", "score_pct": "{:.0f}%",
             "funding_8h_pct": "{:+.3f}%", "price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}"})
@@ -165,7 +182,11 @@ if "rvol" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 5, G), (
 PERF = [c for c in ("perf_pct", "perf_15m", "perf_1h", "perf_4h", "perf_24h", "mfe_pct", "mae_pct") if c in show.columns]
 if PERF: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 5, G), (lambda x: x > 0, LG), (lambda x: x <= -5, R), (lambda x: x < 0, "background-color:#f4a6a6")]), subset=PERF)
 if "short_risk" in show: styled = styled.map(lambda v: {"EXTREME": R, "HIGH": O, "MED": "background-color:#fff2b3"}.get(v, ""), subset=["short_risk"])
-if "side" in show: styled = styled.map(lambda v: R if v == "NONE" else "", subset=["side"])
+if "side" in show: styled = styled.map(lambda v: R if v == "NONE" else "background-color:#eeeeee" if str(v).startswith("SHORT") else "", subset=["side"])
+if "new_24h_high" in show: styled = styled.map(lambda v: LG if v is True else "", subset=["new_24h_high"])
+if "confirmed" in show: styled = styled.map(lambda v: LG if v is True else "", subset=["confirmed"])
+if "compression" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x < 0.6, G), (lambda x: x > 1.3, "background-color:#f4a6a6")]), subset=["compression"])
+if "vol_rank_24h" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x == 1, G), (lambda x: x <= 3, LG), (lambda x: x > 10, "background-color:#f4a6a6")]), subset=["vol_rank_24h"])
 if "macd_long_ok" in show: styled = styled.map(lambda v: LG if v is True else "", subset=["macd_long_ok"])
 if "float_pct" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x < 30, O)]), subset=["float_pct"])
 if "funding_8h_pct" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x <= -0.4, G), (lambda x: x <= -0.1, LG), (lambda x: x >= 0.4, R), (lambda x: x >= 0.1, O)]), subset=["funding_8h_pct"])
@@ -179,6 +200,8 @@ st.dataframe(
     column_config={
         "entry_price": "Entry px", "cur_price": "Now px", "perf_pct": "Perf (signed)", "mfe_pct": "MFE", "mae_pct": "MAE",
         "perf_15m": "@15m", "perf_1h": "@1h", "perf_4h": "@4h", "perf_24h": "@24h",
+        "impulses": "Impulses", "confirmed": "2nd impulse", "new_24h_high": "New 24h hi", "compression": "Pre-spike vol",
+        "vol_rank_24h": "Vol rank", "chg_24h_at_fire_pct": "24h @fire", "oi_chg_1h_pct": "OI 1h", "btc_move_pct": "BTC same win",
         "first_seen_local": "First seen", "age_min": st.column_config.NumberColumn("Age (min)", format="%.0f"), "fires": "Fires",
         "impulse_time": "Impulse @", "impulse_pct": "Impulse %", "impulse_vol_x": "Impulse vol", "short_risk": "Short risk",
         "macd_long_ok": "MACD ✓", "top_exchange": "Heaviest OI", "liq_exchange": "Liq map exch.", "market_cap_usd": "Mkt cap",

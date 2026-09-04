@@ -81,3 +81,27 @@ def impulse(bars_5m: pd.DataFrame, min_move_pct: float, candles: int, vol_multip
             best = {"impulse_pct": round(move, 2), "impulse_candles": k, "impulse_vol_x": round(vmult, 1),
                     "impulse_time": seg.index[0]}
     return best
+
+
+def context(bars_5m: pd.DataFrame, impulse_candles: int = 2) -> dict:
+    """Entry-time context, all computed from bars available at the moment of the fire (no lookahead)."""
+    out = {"range_pos_24h": None, "pct_from_24h_high": None, "new_24h_high": None, "compression": None,
+           "vol_rank_24h": None, "chg_24h_at_fire_pct": None}
+    if bars_5m is None or len(bars_5m) < 300:
+        return out
+    day = bars_5m.iloc[-288:]
+    spike = bars_5m.iloc[-impulse_candles:]
+    pre = bars_5m.iloc[:-impulse_candles]
+    last = float(spike["close"].iloc[-1])
+    hi, lo = float(day["high"].max()), float(day["low"].min())
+    prior_hi = float(pre.iloc[-288:]["high"].max())
+    out["range_pos_24h"] = round((last - lo) / (hi - lo), 2) if hi > lo else None
+    out["pct_from_24h_high"] = round((last / hi - 1) * 100, 2)
+    out["new_24h_high"] = bool(last >= prior_hi)
+    rng = (bars_5m["high"] - bars_5m["low"]) / bars_5m["close"]
+    pre_hour = float(rng.iloc[-impulse_candles - 12:-impulse_candles].mean())
+    norm = float(rng.iloc[-864:-impulse_candles].mean())
+    out["compression"] = round(pre_hour / norm, 2) if norm else None          # <0.6 = coiled, >1.3 = already noisy
+    out["vol_rank_24h"] = int((day["volume"] > float(spike["volume"].max())).sum() + 1)
+    out["chg_24h_at_fire_pct"] = round((last / float(day["open"].iloc[0]) - 1) * 100, 2)
+    return out
