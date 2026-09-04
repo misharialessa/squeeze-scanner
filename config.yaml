@@ -1,4 +1,5 @@
 refresh_seconds: 60
+retain_hours: 48              # keep identified assets on screen this long
 timezone: Asia/Kuwait            # display time zone
 impulse:                         # PRIMARY TRIGGER — sudden move + volume on 5m candles
   min_move_pct: 1.0              # over the last 1 or 2 candles

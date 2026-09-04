@@ -61,3 +61,21 @@ def detail(ticker: str) -> dict:
         "prior_daily_vols": prior_daily,
         "news": news,
     }
+
+
+def last_prices(tickers: list[str]) -> dict:
+    """Latest price for a batch of tickers (one download)."""
+    if not tickers:
+        return {}
+    try:
+        data = yf.download(tickers, period="1d", interval="5m", prepost=True, progress=False, group_by="ticker", threads=True)
+        out = {}
+        for t in tickers:
+            try:
+                s = data[t]["Close"] if len(tickers) > 1 else data["Close"]
+                out[t] = float(s.dropna().iloc[-1])
+            except Exception:
+                pass
+        return out
+    except Exception:
+        return {}

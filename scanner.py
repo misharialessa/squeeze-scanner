@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 from streamlit_autorefresh import st_autorefresh
 from core.scan import run
 from core.metrics import rank_1_to_5
+from core import tracker
+from sources import hyperliquid as hl, stocks as stock_src
 
 load_dotenv()
 import os
@@ -24,8 +26,12 @@ with st.sidebar:
     cfg["stocks"]["enabled"] = st.checkbox("US small caps", cfg["stocks"]["enabled"])
     st.subheader("Impulse trigger (5m)")
     cfg["impulse"]["min_move_pct"] = st.number_input("Min move % (1–2 candles)", 0.2, 20.0, float(cfg["impulse"]["min_move_pct"]), 0.1)
+    cfg["impulse"]["candles"] = st.slider("Candles compared (spike window)", 1, 6, int(cfg["impulse"]["candles"]))
     cfg["impulse"]["vol_multiple"] = st.slider("Candle vol ≥ x avg", 2.0, 5.0, float(cfg["impulse"]["vol_multiple"]), 0.5)
     cfg["impulse"]["avg_lookback_days"] = st.slider("Avg over days", 2, 4, int(cfg["impulse"]["avg_lookback_days"]))
+    cfg["retain_hours"] = st.number_input("Keep hits on screen (hours)", 1, 168, int(cfg["retain_hours"]))
+    if st.button("Clear journal"):
+        hit_store().clear(); tracker.save(hit_store())
     cfg["daily_movers"]["enabled"] = st.checkbox("Also show 24h/day ≥10% movers", cfg["daily_movers"]["enabled"])
     st.caption("CMC: " + ("✅ key set" if os.getenv("CMC_API_KEY") else "not set"))
     min_rvol = st.number_input("Min RVOL to show", 0.0, 20.0, 0.0)
@@ -36,20 +42,51 @@ with st.sidebar:
         st.cache_data.clear()
 
 
-if "ledger" not in st.session_state:
-    st.session_state.ledger = {}          # rolling mid-price history for impulse pre-detection
+@st.cache_resource
+def price_ledger() -> dict:
+    return {}       # rolling mid-price history; lives in the app process, shared across devices/tabs
+
+
+@st.cache_resource
+def hit_store() -> dict:
+    return tracker.load()       # {(asset, ticker): row}; journaled to disk
 
 diag = {}
 try:
     with st.spinner("Scanning…"):
-        df = run(cfg, st.session_state.ledger, diag)
+        new = run(cfg, price_ledger(), diag)
 except Exception:
     st.error("Scan failed — copy the traceback below and send it to Claude.")
     st.code(traceback.format_exc())
     st.stop()
+# ---- journal: ingest new signals, then mark everything to market ----
+store, now_ts = hit_store(), time.time()
+new_rows = [] if new.empty else new.to_dict("records")
+if new_rows:
+    new_ranked = rank_1_to_5(new.copy(), cfg["weights"], cfg)           # freeze side/potential at entry
+    new_rows = new_ranked.to_dict("records")
+tracker.ingest(store, new_rows, now_ts)
+prices = {}
+try:
+    mids = hl.all_mids()
+    prices.update({k: mids[k[1]] for k in store if k[0] == "crypto" and k[1] in mids})
+except Exception:
+    pass
+prices.update({("stock", t): p for t, p in stock_src.last_prices([k[1] for k in store if k[0] == "stock"]).items()})
+tracker.mark(store, prices, now_ts, cfg["retain_hours"])
+tracker.save(store)
+df = pd.DataFrame(list(store.values()))
+if not df.empty:
+    df["live"] = (now_ts - df["last_seen"]) < cfg["refresh_seconds"] * 1.5
+    tz_ = ZoneInfo(cfg["timezone"])
+    df["first_seen_local"] = pd.to_datetime(df["first_seen"], unit="s", utc=True).dt.tz_convert(tz_).dt.strftime("%d %b %H:%M")
+    df["age_min"] = ((now_ts - df["first_seen"]) / 60).round(0)
+    df["flags"] = df["flags"].apply(lambda f: f if isinstance(f, list) else [])
+    df["score_pct"] = df.get("score_pct")
+
 now_local = datetime.now(ZoneInfo(cfg["timezone"])).strftime("%H:%M:%S %Z")
-seeding = len(next(iter(st.session_state.ledger.values()), [])) <= 1
-st.caption(f"Last scan {now_local} · {len(df)} hits" + (" · warming up price ledger (first refresh seeds top-volume perps)" if seeding else ""))
+seeding = len(next(iter(price_ledger().values()), [])) <= 1
+st.caption(f"Last scan {now_local} · {len(new) if not new.empty else 0} new/refired · {len(df)} retained (last {cfg['retain_hours']}h)" + (" · warming up price ledger (first refresh seeds top-volume perps)" if seeding else ""))
 
 with st.expander("Diagnostics — what the scanner checked this refresh", expanded=df.empty):
     c1, c2, c3, c4 = st.columns(4)
@@ -68,16 +105,23 @@ with st.expander("Diagnostics — what the scanner checked this refresh", expand
                                     "vol_x": st.column_config.NumberColumn("Vol ×", format="%.1fx")})
 
 if df.empty:
-    st.info("No assets past the trigger right now. Check Diagnostics above: if candles fetched is 0, Hyperliquid is rate-limiting; "
+    st.info("Nothing retained yet. Check Diagnostics above: if candles fetched is 0, Hyperliquid is rate-limiting; "
             "if near-misses show small moves, the market is simply quiet.")
     st.stop()
 
-try:
-    df = rank_1_to_5(df, cfg["weights"], cfg)
-except Exception:
-    st.error("Ranking failed — copy the traceback below and send it to Claude.")
-    st.code(traceback.format_exc())
-    st.stop()
+df["potential"] = pd.to_numeric(df["entry_potential"], errors="coerce")
+df["side"] = df["entry_side"]
+df["act"] = df["potential"] >= 70
+df = df.sort_values(["live", "first_seen"], ascending=[False, False]).reset_index(drop=True)
+
+# ---- effectiveness ----
+with st.expander("📊 Scanner effectiveness (signed: + means the original call was right)", expanded=False):
+    eff = tracker.effectiveness(df)
+    if eff.empty:
+        st.caption("Needs signals that have aged past the first checkpoint (15 min).")
+    else:
+        st.dataframe(eff, hide_index=True, use_container_width=True)
+    st.download_button("Download journal CSV", df.drop(columns=["flags"], errors="ignore").to_csv(index=False), "signals_journal.csv")
 if min_rvol:
     df = df[df["rvol"].fillna(0) >= min_rvol]
 
@@ -93,7 +137,9 @@ df["flags_txt"] = df["flags"].apply(lambda f: " | ".join(f) if isinstance(f, lis
 tz = ZoneInfo(cfg["timezone"])
 if "impulse_time" in df:
     df["impulse_time"] = pd.to_datetime(df["impulse_time"], utc=True, errors="coerce").dt.tz_convert(tz).dt.strftime("%H:%M")
-cols = ["potential", "side", "ticker", "asset", "impulse_time", "impulse_pct", "impulse_vol_x", "change_pct", "price", "volume",
+df["ticker"] = df.apply(lambda r: ("🟢 " if r.get("live") else "") + str(r["ticker"]), axis=1)
+cols = ["potential", "side", "ticker", "asset", "first_seen_local", "age_min", "entry_price", "cur_price", "perf_pct",
+        "mfe_pct", "mae_pct", "perf_15m", "perf_1h", "perf_4h", "perf_24h", "fires", "impulse_time", "impulse_pct", "impulse_vol_x", "change_pct", "price", "volume",
         "float_pct", "funding_8h_pct", "funding_label", "short_risk", "macd_long_ok", "flags_txt", "why",
         "rvol", "market_cap_usd", "top_markets", "score_pct", "float_shares", "news_link",
         "ema9_5m_pct", "vwap_5m_pct", "ema9_30m_pct", "vwap_30m_pct", "ema9_1h_pct", "vwap_1h_pct"]
@@ -108,12 +154,16 @@ def _c(v, rules):
 G, LG, R, O = "background-color:#1b7f3b;color:white", "background-color:#a8dcb5", "background-color:#c62828;color:white", "background-color:#f6b26b"
 PCT = [c for c in show.columns if c.endswith("_pct")]
 fmt = {c: "{:.1f}%" for c in PCT}
-fmt.update({"volume": "{:,.0f}", "float_shares": "{:,.0f}", "market_cap_usd": "{:,.0f}", "liq_above_usd": "{:,.0f}", "liq_below_usd": "{:,.0f}", "impulse_vol_x": "{:.1f}x", "potential": "{:.0f}", "score_pct": "{:.0f}%",
+fmt.update({"entry_price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}", "cur_price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}",
+            "perf_pct": "{:+.1f}%", "mfe_pct": "{:+.1f}%", "mae_pct": "{:+.1f}%", "perf_15m": "{:+.1f}%", "perf_1h": "{:+.1f}%", "perf_4h": "{:+.1f}%", "perf_24h": "{:+.1f}%",
+            "volume": "{:,.0f}", "float_shares": "{:,.0f}", "market_cap_usd": "{:,.0f}", "liq_above_usd": "{:,.0f}", "liq_below_usd": "{:,.0f}", "impulse_vol_x": "{:.1f}x", "potential": "{:.0f}", "score_pct": "{:.0f}%",
             "funding_8h_pct": "{:+.3f}%", "price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}"})
 styled = show.style.format({k: v for k, v in fmt.items() if k in show.columns}, na_rep="—")
 if "potential" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 70, G), (lambda x: x >= 50, LG), (lambda x: x < 30, "background-color:#eeeeee")]), subset=["potential"])
 if "change_pct" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 30, G), (lambda x: x > 0, LG), (lambda x: x <= -30, R), (lambda x: x < 0, "background-color:#f4a6a6")]), subset=["change_pct"])
 if "rvol" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 5, G), (lambda x: x >= 3, LG), (lambda x: x < 3, "background-color:#f4a6a6")]), subset=["rvol"])
+PERF = [c for c in ("perf_pct", "perf_15m", "perf_1h", "perf_4h", "perf_24h", "mfe_pct", "mae_pct") if c in show.columns]
+if PERF: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 5, G), (lambda x: x > 0, LG), (lambda x: x <= -5, R), (lambda x: x < 0, "background-color:#f4a6a6")]), subset=PERF)
 if "short_risk" in show: styled = styled.map(lambda v: {"EXTREME": R, "HIGH": O, "MED": "background-color:#fff2b3"}.get(v, ""), subset=["short_risk"])
 if "side" in show: styled = styled.map(lambda v: R if v == "NONE" else "", subset=["side"])
 if "macd_long_ok" in show: styled = styled.map(lambda v: LG if v is True else "", subset=["macd_long_ok"])
@@ -127,6 +177,9 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
     column_config={
+        "entry_price": "Entry px", "cur_price": "Now px", "perf_pct": "Perf (signed)", "mfe_pct": "MFE", "mae_pct": "MAE",
+        "perf_15m": "@15m", "perf_1h": "@1h", "perf_4h": "@4h", "perf_24h": "@24h",
+        "first_seen_local": "First seen", "age_min": st.column_config.NumberColumn("Age (min)", format="%.0f"), "fires": "Fires",
         "impulse_time": "Impulse @", "impulse_pct": "Impulse %", "impulse_vol_x": "Impulse vol", "short_risk": "Short risk",
         "macd_long_ok": "MACD ✓", "top_exchange": "Heaviest OI", "liq_exchange": "Liq map exch.", "market_cap_usd": "Mkt cap",
         "top_markets": "Top markets", "liq_above_usd": "Liq $ above", "liq_below_usd": "Liq $ below",
@@ -143,7 +196,7 @@ st.dataframe(
 
 st.subheader("Risk checklist")
 for r in df.to_dict("records"):
-    with st.expander(f"{r['ticker']} · {r['side']} · {r['change_pct']:+.1f}% · potential {r['potential']:.0f}"):
+    with st.expander(f"{r['ticker']} · {r['side']} · entry {r.get('entry_price')} → now {r.get('cur_price')} · perf {r.get('perf_pct') if r.get('perf_pct') is not None else 0:+.1f}% · potential {r['potential']:.0f}"):
         st.caption(r.get("why", ""))
         if r.get("news"):
             st.markdown(f"**News:** [{r['news']}]({r['news_link']})")
@@ -152,4 +205,4 @@ for r in df.to_dict("records"):
         if r.get("error"):
             st.caption(f"data error: {r['error']}")
 
-st.download_button("Export CSV", df.drop(columns=["flags","flags_txt"], errors="ignore").to_csv(index=False), "scan.csv")
+
