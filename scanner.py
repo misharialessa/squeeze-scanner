@@ -1,4 +1,5 @@
 import time
+import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import yaml
@@ -26,8 +27,7 @@ with st.sidebar:
     cfg["impulse"]["vol_multiple"] = st.slider("Candle vol ≥ x avg", 2.0, 5.0, float(cfg["impulse"]["vol_multiple"]), 0.5)
     cfg["impulse"]["avg_lookback_days"] = st.slider("Avg over days", 2, 4, int(cfg["impulse"]["avg_lookback_days"]))
     cfg["daily_movers"]["enabled"] = st.checkbox("Also show 24h/day ≥10% movers", cfg["daily_movers"]["enabled"])
-    st.caption("CoinGlass: " + ("✅ key set" if os.getenv("COINGLASS_API_KEY") else "not set") +
-               " · CMC: " + ("✅ key set" if os.getenv("CMC_API_KEY") else "not set"))
+    st.caption("CMC: " + ("✅ key set" if os.getenv("CMC_API_KEY") else "not set"))
     min_rvol = st.number_input("Min RVOL to show", 0.0, 20.0, 0.0)
     auto = st.toggle("Auto-refresh", True)
     if auto:
@@ -39,8 +39,13 @@ with st.sidebar:
 if "ledger" not in st.session_state:
     st.session_state.ledger = {}          # rolling mid-price history for impulse pre-detection
 
-with st.spinner("Scanning…"):
-    df = run(cfg, st.session_state.ledger)
+try:
+    with st.spinner("Scanning…"):
+        df = run(cfg, st.session_state.ledger)
+except Exception:
+    st.error("Scan failed — copy the traceback below and send it to Claude.")
+    st.code(traceback.format_exc())
+    st.stop()
 now_local = datetime.now(ZoneInfo(cfg["timezone"])).strftime("%H:%M:%S %Z")
 seeding = len(next(iter(st.session_state.ledger.values()), [])) <= 1
 st.caption(f"Last scan {now_local} · {len(df)} hits" + (" · warming up price ledger (first refresh seeds top-volume perps)" if seeding else ""))
@@ -49,7 +54,12 @@ if df.empty:
     st.info("No assets past the trigger right now.")
     st.stop()
 
-df = rank_1_to_5(df, cfg["weights"], cfg)
+try:
+    df = rank_1_to_5(df, cfg["weights"], cfg)
+except Exception:
+    st.error("Ranking failed — copy the traceback below and send it to Claude.")
+    st.code(traceback.format_exc())
+    st.stop()
 if min_rvol:
     df = df[df["rvol"].fillna(0) >= min_rvol]
 
@@ -67,9 +77,8 @@ if "impulse_time" in df:
     df["impulse_time"] = pd.to_datetime(df["impulse_time"], utc=True, errors="coerce").dt.tz_convert(tz).dt.strftime("%H:%M")
 cols = ["potential", "side", "ticker", "asset", "impulse_time", "impulse_pct", "impulse_vol_x", "change_pct", "price", "volume",
         "float_pct", "funding_8h_pct", "funding_label", "short_risk", "macd_long_ok", "flags_txt", "why",
-        "rvol", "top_exchange", "liq_exchange", "market_cap_usd", "top_markets", "score_pct", "float_shares", "news_link",
-        "ema9_5m_pct", "vwap_5m_pct", "ema9_30m_pct", "vwap_30m_pct", "ema9_1h_pct", "vwap_1h_pct",
-        "liq_above_pct", "liq_below_pct", "liq_above_usd", "liq_below_usd"]
+        "rvol", "market_cap_usd", "top_markets", "score_pct", "float_shares", "news_link",
+        "ema9_5m_pct", "vwap_5m_pct", "ema9_30m_pct", "vwap_30m_pct", "ema9_1h_pct", "vwap_1h_pct"]
 rank_cols = [c for c in df.columns if c.startswith("rank_")]
 show = df[[c for c in cols + rank_cols if c in df.columns]]
 

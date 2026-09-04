@@ -2,7 +2,7 @@ import time
 import pandas as pd
 from core.indicators import resample, rvol, impulse
 from core.metrics import METRICS, checklist
-from sources import hyperliquid as hl, stocks, crypto_extras, coinglass, cmc
+from sources import hyperliquid as hl, stocks, crypto_extras, cmc
 
 
 def _run_metrics(hit, asset, ctx):
@@ -67,9 +67,6 @@ def scan_crypto(cfg, ledger: dict) -> list[dict]:
         except Exception:
             hit["rvol"] = None
         hit.update(cmc.asset_info(coin))
-        ex = coinglass.heaviest_exchange(coin)
-        hit.update(ex)
-        hit.update(coinglass.liquidation_clusters(coin, hit["price"], ex.get("top_exchange") or "Binance"))
         n = crypto_extras.news(coin)
         hit["news"], hit["news_link"] = (n[0][0], n[0][1]) if n else (None, None)
         hits.append(_run_metrics(hit, "crypto", ctx))
@@ -112,5 +109,11 @@ def run(cfg, ledger: dict) -> pd.DataFrame:
                 rows.append({"asset": fn.__name__.split("_")[1], "ticker": "SOURCE ERROR", "change_pct": 0, "error": str(e)[:120]})
     df = pd.DataFrame(rows)
     if not df.empty:
-        df["flags"] = [checklist(r, cfg) for r in df.to_dict("records")]
+        flags = []
+        for r in df.to_dict("records"):
+            try:
+                flags.append(checklist(r, cfg))
+            except Exception as e:
+                flags.append([f"checklist error: {e}"])
+        df["flags"] = flags
     return df

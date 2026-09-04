@@ -14,6 +14,11 @@ from core.indicators import extension_pct, macd_state
 METRICS: list[tuple[str, str, callable]] = []
 
 
+def _v(x):
+    """None for missing/NaN, else the value."""
+    return None if x is None or (isinstance(x, float) and x != x) else x
+
+
 def metric(name: str, asset: str = "both"):
     def deco(fn):
         METRICS.append((name, asset, fn))
@@ -61,6 +66,7 @@ def m_short_risk(hit, ctx):
     """How dangerous is it to short this? Combines float, funding sign, overhead liquidation clusters."""
     cfg = ctx["config"]["crypto"]
     pts, why = 0, []
+    hit = {k: _v(v) for k, v in hit.items()}
     fl, f = hit.get("float_pct"), hit.get("funding_8h_pct")
     if fl is not None and fl < 30: pts += 2; why.append("low float")
     if fl is not None and fl < 15: pts += 1
@@ -68,8 +74,6 @@ def m_short_risk(hit, ctx):
     elif f is not None and f <= -cfg["funding_high_pct"]: pts += 1; why.append("shorts paying")
     la, lb = hit.get("liq_above_pct"), hit.get("liq_below_pct")
     if la is not None and la <= 5: pts += 2; why.append(f"short liqs {la}% overhead")
-    if hit.get("liq_above_usd") and hit.get("liq_below_usd") and hit["liq_above_usd"] > 2 * hit["liq_below_usd"]:
-        pts += 1; why.append("overhead clusters dominate")
     if abs(hit.get("change_pct") or 0) >= cfg["heavy_move_pct"]: pts += 1; why.append("parabolic")
     label = "EXTREME" if pts >= 6 else "HIGH" if pts >= 4 else "MED" if pts >= 2 else "LOW"
     return {"short_risk": label, "short_risk_why": ", ".join(why)}
@@ -123,11 +127,6 @@ def rank_1_to_5(df: pd.DataFrame, weights: dict, cfg: dict) -> pd.DataFrame:
 # ---------- absolute trade-potential score (0–100) ----------
 # Direction = sign of the move. Points only for evidence aligned with that direction.
 
-def _v(x):
-    """None for missing/NaN, else the value."""
-    return None if x is None or (isinstance(x, float) and x != x) else x
-
-
 def potential(hit: dict, cfg: dict) -> dict:
     hit = {k: _v(v) for k, v in hit.items()}
     chg = hit.get("change_pct") or 0
@@ -177,6 +176,7 @@ def potential(hit: dict, cfg: dict) -> dict:
 # ---------- risk checklist ----------
 
 def checklist(hit: dict, cfg: dict) -> list[str]:
+    hit = {k: _v(v) for k, v in hit.items()}
     flags = []
     chg, fl_pct, rv = hit.get("change_pct") or 0, hit.get("float_pct"), hit.get("rvol")
     heavy = abs(chg) >= cfg["crypto"]["heavy_move_pct"]
@@ -184,7 +184,7 @@ def checklist(hit: dict, cfg: dict) -> list[str]:
         flags.append(f"⚠ RVOL {rv}x < {cfg['rvol']['shortlist_multiple']}x — move not volume-backed")
     if fl_pct is not None and fl_pct < 30:
         flags.append("🔴 Low float — squeeze risk for shorts / support for longs" + (" (weighted: heavy move)" if heavy else ""))
-    if hit.get("short_pct_float") and hit["short_pct_float"] > 0.2:
+    if isinstance(hit.get("short_pct_float"), (int, float)) and hit["short_pct_float"] > 0.2:
         flags.append(f"🔥 Short interest {hit['short_pct_float']*100:.0f}% of float")
     f = hit.get("funding_8h_pct")
     if f is not None and f <= -cfg["crypto"]["funding_high_pct"]:
@@ -193,8 +193,6 @@ def checklist(hit: dict, cfg: dict) -> list[str]:
         flags.append(f"⚠ Extreme positive funding {f:.3f}% — longs crowded")
     if hit.get("above_all") is False and hit.get("extension_avg_pct") is not None:
         flags.append("⚠ Not above 9EMA+VWAP on all TFs")
-    if hit.get("liq_bias"):
-        flags.append(f"🎯 Liquidation bias: {hit['liq_bias']}")
     if not hit.get("news_link"):
         flags.append("⚠ No news catalyst found")
     if hit.get("macd_long_ok"):
