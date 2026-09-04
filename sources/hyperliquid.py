@@ -50,3 +50,8 @@ def daily_volumes(coin: str, days: int = 6) -> pd.Series:
     """Prior-day base-asset volumes (excludes the current, partial day)."""
     d = candles(coin, "1d", days + 1)
     return d["volume"].iloc[:-1] if len(d) > 1 else pd.Series(dtype=float)
+
+
+def all_mids() -> dict:
+    """{coin: mid price} — cheapest call; used for the rolling price ledger."""
+    return {k: float(v) for k, v in _post({"type": "allMids"}).items() if not k.startswith("@")}

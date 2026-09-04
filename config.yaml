@@ -1,24 +1,25 @@
 refresh_seconds: 60
+timezone: Asia/Kuwait            # display time zone
+impulse:                         # PRIMARY TRIGGER — sudden move + volume on 5m candles
+  min_move_pct: 1.0              # over the last 1 or 2 candles
+  candles: 2
+  vol_multiple: 3.0              # candle volume ÷ avg per-candle volume (range 2–5)
+  avg_lookback_days: 3           # range 2–4
+  cold_start_assets: 40          # crypto: how many top-volume perps to seed with candles on first load
+daily_movers:                    # OPTIONAL secondary trigger (old behaviour)
+  enabled: false
+  move_pct: 10
 crypto:
   enabled: true
-  source: hyperliquid          # HL perps only
-  move_trigger_pct: 10
-  heavy_move_pct: 30           # float/funding get extra weight above this
-  funding_high_pct: 0.10       # per 8h-equivalent
+  heavy_move_pct: 30
+  funding_high_pct: 0.10         # 8h-equivalent
   funding_extreme_pct: 0.40
+  dont_touch: {move_pct: 50, float_pct: 30, funding_pct: -0.30}
 stocks:
   enabled: true
-  max_price: 20
-  max_float_m: 50
-  move_trigger_pct: 10
-rvol:
-  lookback_days: 5
-  shortlist_multiple: 3
-  strong_multiple: 5
+  finviz_cap: midunder           # nano→mid cap
+  min_day_change_pct: 3          # pre-filter before checking 5m impulse
+  max_candidates: 40
+macd: {fast: 12, slow: 26, signal: 9, cross_lookback: 3}
 timeframes: ["5m", "30m", "1h"]
-weights:                       # composite score = sum(rank * weight)
-  move: 1.0
-  rvol: 1.5
-  extension: 1.0
-  funding: 1.0
-  liquidation: 1.0
+weights: {move: 1.0, rvol: 1.5, extension: 1.0, funding: 1.0, liquidation: 1.0}

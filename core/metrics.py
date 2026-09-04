@@ -9,7 +9,7 @@ HOW TO ADD A NEW INDICATOR
 That's it — the scanner picks it up automatically.
 """
 import pandas as pd
-from core.indicators import extension_pct
+from core.indicators import extension_pct, macd_state
 
 METRICS: list[tuple[str, str, callable]] = []
 
@@ -49,6 +49,43 @@ def m_funding(hit, ctx):
     return {"funding_label": f"{side} · {mag}"}
 
 
+@metric("macd")
+def m_macd(hit, ctx):
+    st = macd_state(ctx.get("bars_5m"), ctx["config"]["macd"])
+    st["macd_long_ok"] = bool(st["macd_positive"]) and st["macd_cross_up_ago"] is not None
+    return st
+
+
+@metric("short_risk", asset="crypto")
+def m_short_risk(hit, ctx):
+    """How dangerous is it to short this? Combines float, funding sign, overhead liquidation clusters."""
+    cfg = ctx["config"]["crypto"]
+    pts, why = 0, []
+    fl, f = hit.get("float_pct"), hit.get("funding_8h_pct")
+    if fl is not None and fl < 30: pts += 2; why.append("low float")
+    if fl is not None and fl < 15: pts += 1
+    if f is not None and f <= -cfg["funding_extreme_pct"]: pts += 2; why.append("shorts paying extreme")
+    elif f is not None and f <= -cfg["funding_high_pct"]: pts += 1; why.append("shorts paying")
+    la, lb = hit.get("liq_above_pct"), hit.get("liq_below_pct")
+    if la is not None and la <= 5: pts += 2; why.append(f"short liqs {la}% overhead")
+    if hit.get("liq_above_usd") and hit.get("liq_below_usd") and hit["liq_above_usd"] > 2 * hit["liq_below_usd"]:
+        pts += 1; why.append("overhead clusters dominate")
+    if abs(hit.get("change_pct") or 0) >= cfg["heavy_move_pct"]: pts += 1; why.append("parabolic")
+    label = "EXTREME" if pts >= 6 else "HIGH" if pts >= 4 else "MED" if pts >= 2 else "LOW"
+    return {"short_risk": label, "short_risk_why": ", ".join(why)}
+
+
+def dont_touch(hit: dict, cfg: dict) -> str | None:
+    """SKR pattern: parabolic + low float + shorts paying heavily → shorts get hunted, then longs get flushed."""
+    d = cfg["crypto"]["dont_touch"]
+    chg, fl, f = _v(hit.get("change_pct")) or 0, _v(hit.get("float_pct")), _v(hit.get("funding_8h_pct"))
+    if chg >= d["move_pct"] and fl is not None and fl < d["float_pct"] and f is not None and f <= d["funding_pct"]:
+        return "DON'T TOUCH — low-float short hunt: shorts liquidated despite paying, longs late for the flush"
+    if chg >= d["move_pct"] and hit.get("short_risk") == "EXTREME":
+        return "DON'T TOUCH — parabolic with extreme short risk; no edge either side"
+    return None
+
+
 # ---------- 1–5 ranking ----------
 # Each rule: column -> (higher_is_better, transform). Ranked by quintile across the current hit list.
 
@@ -61,8 +98,7 @@ RANK_RULES = {
 }
 
 
-def rank_1_to_5(df: pd.DataFrame, weights: dict, cfg: dict = None) -> pd.DataFrame:
-    cfg = cfg or {"crypto": {"funding_high_pct": 0.1, "funding_extreme_pct": 0.4}}
+def rank_1_to_5(df: pd.DataFrame, weights: dict, cfg: dict) -> pd.DataFrame:
     if df.empty:
         return df
     score = pd.Series(0.0, index=df.index)
@@ -125,6 +161,16 @@ def potential(hit: dict, cfg: dict) -> dict:
         pts += p; why.append(f"liq cluster {liq}% ahead {p:+d}")
     if hit.get("news_link"):
         pts += 10; why.append("catalyst +10")
+    if hit.get("impulse_vol_x"):
+        p = 15 if hit["impulse_vol_x"] >= 5 else 10
+        pts += p; why.append(f"impulse {hit['impulse_pct']}% on {hit['impulse_vol_x']}x vol {p:+d}")
+    if side == "LONG" and hit.get("macd_long_ok"):
+        pts += 10; why.append(f"MACD>0 & cross {hit['macd_cross_up_ago']} bars ago +10")
+    elif side == "LONG" and hit.get("macd_positive") is False:
+        pts -= 5; why.append("MACD<0 -5")
+    dt = dont_touch(hit, cfg)
+    if dt:
+        return {"side": "NONE", "potential": 0, "why": dt}
     return {"side": side, "potential": max(0, min(100, pts)), "why": " · ".join(why)}
 
 
@@ -151,4 +197,8 @@ def checklist(hit: dict, cfg: dict) -> list[str]:
         flags.append(f"🎯 Liquidation bias: {hit['liq_bias']}")
     if not hit.get("news_link"):
         flags.append("⚠ No news catalyst found")
+    if hit.get("macd_long_ok"):
+        flags.append("✅ MACD positive + bullish cross")
+    if hit.get("short_risk") in ("HIGH", "EXTREME"):
+        flags.append(f"🚫 Short risk {hit['short_risk']}: {hit.get('short_risk_why')}")
     return flags

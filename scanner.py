@@ -1,4 +1,6 @@
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import yaml
 import pandas as pd
 import streamlit as st
@@ -19,8 +21,13 @@ with st.sidebar:
     st.header("Filters")
     cfg["crypto"]["enabled"] = st.checkbox("Crypto (Hyperliquid perps)", cfg["crypto"]["enabled"])
     cfg["stocks"]["enabled"] = st.checkbox("US small caps", cfg["stocks"]["enabled"])
-    cfg["crypto"]["move_trigger_pct"] = st.number_input("Crypto move trigger %", 1.0, 100.0, float(cfg["crypto"]["move_trigger_pct"]))
-    cfg["stocks"]["move_trigger_pct"] = st.number_input("Stock move trigger %", 1.0, 100.0, float(cfg["stocks"]["move_trigger_pct"]))
+    st.subheader("Impulse trigger (5m)")
+    cfg["impulse"]["min_move_pct"] = st.number_input("Min move % (1–2 candles)", 0.2, 20.0, float(cfg["impulse"]["min_move_pct"]), 0.1)
+    cfg["impulse"]["vol_multiple"] = st.slider("Candle vol ≥ x avg", 2.0, 5.0, float(cfg["impulse"]["vol_multiple"]), 0.5)
+    cfg["impulse"]["avg_lookback_days"] = st.slider("Avg over days", 2, 4, int(cfg["impulse"]["avg_lookback_days"]))
+    cfg["daily_movers"]["enabled"] = st.checkbox("Also show 24h/day ≥10% movers", cfg["daily_movers"]["enabled"])
+    st.caption("CoinGlass: " + ("✅ key set" if os.getenv("COINGLASS_API_KEY") else "not set") +
+               " · CMC: " + ("✅ key set" if os.getenv("CMC_API_KEY") else "not set"))
     min_rvol = st.number_input("Min RVOL to show", 0.0, 20.0, 0.0)
     auto = st.toggle("Auto-refresh", True)
     if auto:
@@ -29,13 +36,14 @@ with st.sidebar:
         st.cache_data.clear()
 
 
-@st.cache_data(ttl=cfg["refresh_seconds"] - 5, show_spinner="Scanning…")
-def cached_scan(cfg_json: str):
-    return run(yaml.safe_load(cfg_json))
+if "ledger" not in st.session_state:
+    st.session_state.ledger = {}          # rolling mid-price history for impulse pre-detection
 
-
-df = cached_scan(yaml.dump(cfg))
-st.caption(f"Last scan {time.strftime('%H:%M:%S')} · {len(df)} hits")
+with st.spinner("Scanning…"):
+    df = run(cfg, st.session_state.ledger)
+now_local = datetime.now(ZoneInfo(cfg["timezone"])).strftime("%H:%M:%S %Z")
+seeding = len(next(iter(st.session_state.ledger.values()), [])) <= 1
+st.caption(f"Last scan {now_local} · {len(df)} hits" + (" · warming up price ledger (first refresh seeds top-volume perps)" if seeding else ""))
 
 if df.empty:
     st.info("No assets past the trigger right now.")
@@ -48,13 +56,20 @@ if min_rvol:
 act = df[df["act"]]
 if len(act):
     st.error("🔥 ACT NOW (potential ≥70): " + ", ".join(f"{t} {s}" for t, s in zip(act["ticker"], act["side"])))
+dt = df[df["side"] == "NONE"]
+if len(dt):
+    st.warning("🚫 DON'T TOUCH: " + ", ".join(dt["ticker"]))
 df["ticker"] = df.apply(lambda r: ("🔥 " if r["act"] else "") + r["ticker"], axis=1)
 
 df["flags_txt"] = df["flags"].apply(lambda f: " | ".join(f) if isinstance(f, list) else "")
-cols = ["potential", "side", "ticker", "asset", "change_pct", "price", "volume", "float_pct",
-        "funding_8h_pct", "funding_label", "flags_txt", "why", "rvol", "score_pct", "float_shares", "news_link",
+tz = ZoneInfo(cfg["timezone"])
+if "impulse_time" in df:
+    df["impulse_time"] = pd.to_datetime(df["impulse_time"], utc=True, errors="coerce").dt.tz_convert(tz).dt.strftime("%H:%M")
+cols = ["potential", "side", "ticker", "asset", "impulse_time", "impulse_pct", "impulse_vol_x", "change_pct", "price", "volume",
+        "float_pct", "funding_8h_pct", "funding_label", "short_risk", "macd_long_ok", "flags_txt", "why",
+        "rvol", "top_exchange", "liq_exchange", "market_cap_usd", "top_markets", "score_pct", "float_shares", "news_link",
         "ema9_5m_pct", "vwap_5m_pct", "ema9_30m_pct", "vwap_30m_pct", "ema9_1h_pct", "vwap_1h_pct",
-        "liq_above_pct", "liq_below_pct"]
+        "liq_above_pct", "liq_below_pct", "liq_above_usd", "liq_below_usd"]
 rank_cols = [c for c in df.columns if c.startswith("rank_")]
 show = df[[c for c in cols + rank_cols if c in df.columns]]
 
@@ -66,12 +81,15 @@ def _c(v, rules):
 G, LG, R, O = "background-color:#1b7f3b;color:white", "background-color:#a8dcb5", "background-color:#c62828;color:white", "background-color:#f6b26b"
 PCT = [c for c in show.columns if c.endswith("_pct")]
 fmt = {c: "{:.1f}%" for c in PCT}
-fmt.update({"volume": "{:,.0f}", "float_shares": "{:,.0f}", "potential": "{:.0f}", "score_pct": "{:.0f}%",
+fmt.update({"volume": "{:,.0f}", "float_shares": "{:,.0f}", "market_cap_usd": "{:,.0f}", "liq_above_usd": "{:,.0f}", "liq_below_usd": "{:,.0f}", "impulse_vol_x": "{:.1f}x", "potential": "{:.0f}", "score_pct": "{:.0f}%",
             "funding_8h_pct": "{:+.3f}%", "price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}"})
 styled = show.style.format({k: v for k, v in fmt.items() if k in show.columns}, na_rep="—")
 if "potential" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 70, G), (lambda x: x >= 50, LG), (lambda x: x < 30, "background-color:#eeeeee")]), subset=["potential"])
 if "change_pct" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 30, G), (lambda x: x > 0, LG), (lambda x: x <= -30, R), (lambda x: x < 0, "background-color:#f4a6a6")]), subset=["change_pct"])
 if "rvol" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 5, G), (lambda x: x >= 3, LG), (lambda x: x < 3, "background-color:#f4a6a6")]), subset=["rvol"])
+if "short_risk" in show: styled = styled.map(lambda v: {"EXTREME": R, "HIGH": O, "MED": "background-color:#fff2b3"}.get(v, ""), subset=["short_risk"])
+if "side" in show: styled = styled.map(lambda v: R if v == "NONE" else "", subset=["side"])
+if "macd_long_ok" in show: styled = styled.map(lambda v: LG if v is True else "", subset=["macd_long_ok"])
 if "float_pct" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x < 30, O)]), subset=["float_pct"])
 if "funding_8h_pct" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x <= -0.4, G), (lambda x: x <= -0.1, LG), (lambda x: x >= 0.4, R), (lambda x: x >= 0.1, O)]), subset=["funding_8h_pct"])
 ext = [c for c in show.columns if c.startswith(("ema9_", "vwap_"))]
@@ -82,6 +100,9 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
     column_config={
+        "impulse_time": "Impulse @", "impulse_pct": "Impulse %", "impulse_vol_x": "Impulse vol", "short_risk": "Short risk",
+        "macd_long_ok": "MACD ✓", "top_exchange": "Heaviest OI", "liq_exchange": "Liq map exch.", "market_cap_usd": "Mkt cap",
+        "top_markets": "Top markets", "liq_above_usd": "Liq $ above", "liq_below_usd": "Liq $ below",
         "potential": "Potential", "side": "Side", "ticker": "Ticker", "asset": "Asset", "change_pct": "Δ %",
         "price": "Price", "volume": "Volume", "float_pct": "Float %", "float_shares": "Float (shares)",
         "funding_8h_pct": "Funding 8h", "funding_label": "Funding", "rvol": "RVOL (5d)", "score_pct": "Rel. score",

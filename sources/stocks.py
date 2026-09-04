@@ -8,12 +8,12 @@ import yfinance as yf
 _HDR = {"User-Agent": "Mozilla/5.0"}
 
 
-def movers(max_price: float = 20, max_float_m: float = 50, min_move: float = 10) -> pd.DataFrame:
-    """Gainers AND losers ≥ min_move % with price/float caps."""
+def movers(cap: str = "midunder", min_move: float = 3, max_candidates: int = 40) -> pd.DataFrame:
+    """Candidates: nano→mid cap, ≥min_move % today, elevated relative volume. Impulse is checked later on 5m bars."""
     frames = []
-    for direction in ("u", "d"):
-        url = (f"https://finviz.com/screener.ashx?v=111&f=sh_price_u{int(max_price)},"
-               f"sh_float_u{int(max_float_m)},ta_change_{direction}{int(min_move)}&o=-change")
+    for direction in ("u",):
+        url = (f"https://finviz.com/screener.ashx?v=111&f=cap_{cap},sh_relvol_o1.5,"
+               f"ta_change_{direction}{int(min_move)}&o=-relativevolume")
         try:
             html = requests.get(url, headers=_HDR, timeout=15).text
             tables = pd.read_html(io.StringIO(html))
@@ -40,7 +40,7 @@ def movers(max_price: float = 20, max_float_m: float = 50, min_move: float = 10)
         "change_pct": pd.to_numeric(ch.astype(str).str.rstrip("%").str.replace(",", ""), errors="coerce"),
         "volume": pd.to_numeric(vo.astype(str).str.replace(",", ""), errors="coerce") if vo is not None else None,
     })
-    return out.dropna(subset=["change_pct"]).reset_index(drop=True)
+    return out.dropna(subset=["change_pct"]).head(max_candidates).reset_index(drop=True)
 
 
 def detail(ticker: str) -> dict:
