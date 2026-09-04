@@ -39,9 +39,10 @@ with st.sidebar:
 if "ledger" not in st.session_state:
     st.session_state.ledger = {}          # rolling mid-price history for impulse pre-detection
 
+diag = {}
 try:
     with st.spinner("Scanning…"):
-        df = run(cfg, st.session_state.ledger)
+        df = run(cfg, st.session_state.ledger, diag)
 except Exception:
     st.error("Scan failed — copy the traceback below and send it to Claude.")
     st.code(traceback.format_exc())
@@ -50,8 +51,25 @@ now_local = datetime.now(ZoneInfo(cfg["timezone"])).strftime("%H:%M:%S %Z")
 seeding = len(next(iter(st.session_state.ledger.values()), [])) <= 1
 st.caption(f"Last scan {now_local} · {len(df)} hits" + (" · warming up price ledger (first refresh seeds top-volume perps)" if seeding else ""))
 
+with st.expander("Diagnostics — what the scanner checked this refresh", expanded=df.empty):
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Crypto candidates", diag.get("crypto_candidates", 0))
+    c2.metric("Candles fetched", diag.get("candles_ok", 0))
+    c3.metric("Candle errors", diag.get("candles_err", 0))
+    c4.metric("Stock candidates", getattr(__import__("core.scan", fromlist=["scan_stocks"]).scan_stocks, "diag", {}).get("stock_candidates", "—"))
+    for k in ("last_err", "scan_crypto_error", "scan_stocks_error"):
+        if diag.get(k):
+            st.code(f"{k}: {diag[k]}")
+    nm = pd.DataFrame(diag.get("near_misses", []))
+    if len(nm):
+        st.caption("Closest to trigger (move over last 2 candles · spike volume ÷ 3-day per-candle avg):")
+        st.dataframe(nm.sort_values("move_pct", ascending=False).head(15), hide_index=True, use_container_width=True,
+                     column_config={"move_pct": st.column_config.NumberColumn("Move %", format="%.2f%%"),
+                                    "vol_x": st.column_config.NumberColumn("Vol ×", format="%.1fx")})
+
 if df.empty:
-    st.info("No assets past the trigger right now.")
+    st.info("No assets past the trigger right now. Check Diagnostics above: if candles fetched is 0, Hyperliquid is rate-limiting; "
+            "if near-misses show small moves, the market is simply quiet.")
     st.stop()
 
 try:

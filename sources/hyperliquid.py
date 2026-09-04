@@ -7,10 +7,14 @@ API = "https://api.hyperliquid.xyz/info"
 _TF_MS = {"5m": 5 * 60_000, "30m": 30 * 60_000, "1h": 60 * 60_000, "1d": 86_400_000}
 
 
-def _post(payload: dict):
-    r = requests.post(API, json=payload, timeout=15)
-    r.raise_for_status()
-    return r.json()
+def _post(payload: dict, retries: int = 2):
+    for i in range(retries + 1):
+        r = requests.post(API, json=payload, timeout=15)
+        if r.status_code == 429 and i < retries:
+            time.sleep(1.5 * (i + 1))
+            continue
+        r.raise_for_status()
+        return r.json()
 
 
 def universe_snapshot() -> pd.DataFrame:

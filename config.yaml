@@ -5,7 +5,7 @@ impulse:                         # PRIMARY TRIGGER — sudden move + volume on 5
   candles: 2
   vol_multiple: 3.0              # candle volume ÷ avg per-candle volume (range 2–5)
   avg_lookback_days: 3           # range 2–4
-  cold_start_assets: 40          # crypto: how many top-volume perps to seed with candles on first load
+  cold_start_assets: 25          # crypto: how many top-volume perps to seed with candles on first load
 daily_movers:                    # OPTIONAL secondary trigger (old behaviour)
   enabled: false
   move_pct: 10

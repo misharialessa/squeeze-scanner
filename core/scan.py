@@ -43,16 +43,37 @@ def crypto_candidates(cfg, ledger: dict, snap: pd.DataFrame) -> list[str]:
     return sorted(cands)
 
 
-def scan_crypto(cfg, ledger: dict) -> list[dict]:
+def _near_miss(b5, cfg):
+    """Best move over the last 1..N candles and the spike volume multiple, regardless of thresholds."""
+    i = cfg["impulse"]
+    n = int(i["avg_lookback_days"] * 288)
+    if b5 is None or len(b5) < 30:
+        return None
+    hist = b5.iloc[-(n + i["candles"]):-i["candles"]]
+    avg = float(hist["volume"].mean()) or 1
+    seg = b5.iloc[-i["candles"]:]
+    return {"move_pct": round((float(seg["close"].iloc[-1]) / float(seg["open"].iloc[0]) - 1) * 100, 2),
+            "vol_x": round(float(seg["volume"].max()) / avg, 1)}
+
+
+def scan_crypto(cfg, ledger: dict, diag: dict) -> list[dict]:
     snap = hl.universe_snapshot().set_index("ticker")
+    cands = crypto_candidates(cfg, ledger, snap.reset_index())
+    diag.update(crypto_candidates=len(cands), candles_ok=0, candles_err=0, last_err=None, near_misses=[])
     hits = []
-    for coin in crypto_candidates(cfg, ledger, snap.reset_index()):
+    for coin in cands:
         if coin not in snap.index:
             continue
         try:
             b5 = hl.candles(coin, "5m", int(cfg["impulse"]["avg_lookback_days"] * 288) + 10)
-        except Exception:
+            diag["candles_ok"] += 1
+            time.sleep(0.25)                                  # stay under HL rate limit
+        except Exception as e:
+            diag["candles_err"] += 1; diag["last_err"] = str(e)[:160]
             continue
+        nm = _near_miss(b5, cfg)
+        if nm:
+            diag["near_misses"].append({"ticker": coin, **nm})
         imp = _impulse(b5, cfg)
         daily_hit = cfg["daily_movers"]["enabled"] and abs(snap.loc[coin, "change_pct"] or 0) >= cfg["daily_movers"]["move_pct"]
         if not imp and not daily_hit:
@@ -79,6 +100,7 @@ def scan_stocks(cfg) -> list[dict]:
     s = cfg["stocks"]
     cands = stocks.movers(s["finviz_cap"], s["min_day_change_pct"], s["max_candidates"])
     hits = []
+    scan_stocks.diag = {"stock_candidates": len(cands)}
     for _, row in cands.iterrows():
         hit = row.to_dict(); hit["asset"] = "stock"
         try:
@@ -99,13 +121,14 @@ def scan_stocks(cfg) -> list[dict]:
     return hits
 
 
-def run(cfg, ledger: dict) -> pd.DataFrame:
+def run(cfg, ledger: dict, diag: dict) -> pd.DataFrame:
     rows = []
-    for enabled, fn, args in ((cfg["crypto"]["enabled"], scan_crypto, (cfg, ledger)), (cfg["stocks"]["enabled"], scan_stocks, (cfg,))):
+    for enabled, fn, args in ((cfg["crypto"]["enabled"], scan_crypto, (cfg, ledger, diag)), (cfg["stocks"]["enabled"], scan_stocks, (cfg,))):
         if enabled:
             try:
                 rows += fn(*args)
             except Exception as e:
+                diag[f"{fn.__name__}_error"] = str(e)[:200]
                 rows.append({"asset": fn.__name__.split("_")[1], "ticker": "SOURCE ERROR", "change_pct": 0, "error": str(e)[:120]})
     df = pd.DataFrame(rows)
     if not df.empty:
