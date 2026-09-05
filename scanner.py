@@ -17,6 +17,15 @@ import os
 for k, v in st.secrets.items(): os.environ.setdefault(k, str(v))   # Streamlit Cloud secrets
 cfg = yaml.safe_load(open("config.yaml"))
 
+@st.cache_resource
+def price_ledger() -> dict:
+    return {}       # rolling mid-price history; lives in the app process, shared across devices/tabs
+
+
+@st.cache_resource
+def hit_store() -> dict:
+    return tracker.load()       # {(asset, ticker): row}; journaled to disk
+
 st.set_page_config(page_title="Squeeze Scanner", layout="wide")
 st.title("Momentum / Squeeze Scanner")
 
@@ -51,14 +60,6 @@ with st.sidebar:
         st.cache_data.clear()
 
 
-@st.cache_resource
-def price_ledger() -> dict:
-    return {}       # rolling mid-price history; lives in the app process, shared across devices/tabs
-
-
-@st.cache_resource
-def hit_store() -> dict:
-    return tracker.load()       # {(asset, ticker): row}; journaled to disk
 
 diag = {}
 try:
@@ -227,5 +228,3 @@ for r in df.to_dict("records"):
             st.write(f)
         if r.get("error"):
             st.caption(f"data error: {r['error']}")
-
-
