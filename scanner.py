@@ -144,7 +144,7 @@ if min_potential:
 
 act = df[df["act"]]
 if len(act):
-    st.error("🔥 IGNITION (entry score ≥60, long): " + ", ".join(f"{t} {s}" for t, s in zip(act["ticker"], act["side"])))
+    st.error("🔥 IGNITION (entry score ≥60, long — 15m–1h horizon, take partials into strength): " + ", ".join(f"{t} {s}" for t, s in zip(act["ticker"], act["side"])))
 dt = df[df["side"] == "NONE"]
 if len(dt):
     st.warning("🚫 DON'T TOUCH: " + ", ".join(dt["ticker"]))
@@ -228,3 +228,5 @@ for r in df.to_dict("records"):
             st.write(f)
         if r.get("error"):
             st.caption(f"data error: {r['error']}")
+
+

@@ -143,45 +143,31 @@ def potential(hit: dict, cfg: dict) -> dict:
         nonlocal pts
         pts += p; why.append(f"{label} {p:+d}")
 
-    # 1) where in the range did it fire
-    if hit.get("new_24h_high"): add(20, "new 24h high")
-    elif hit.get("range_pos_24h") is not None:
-        rp = hit["range_pos_24h"]
-        add(10 if rp >= 0.8 else -10 if rp < 0.5 else 0, f"range pos {rp:.2f}")
-    # 2) compression before the spike
-    c = hit.get("compression")
-    if c is not None: add(15 if c < 0.6 else 5 if c < 0.9 else -5 if c > 1.3 else 0, f"pre-spike vol {c:.2f}x")
-    # 3) is this the first big candle or the 15th
-    vr = hit.get("vol_rank_24h")
-    if vr is not None: add(15 if vr == 1 else 8 if vr <= 3 else -10 if vr > 10 else 0, f"vol rank #{vr}/24h")
-    # 4) stage of the move
-    s24 = hit.get("chg_24h_at_fire_pct")
-    if s24 is not None: add(10 if abs(s24) < 5 else 0 if abs(s24) < 20 else -10, f"24h stage {s24:+.0f}%")
-    # 5) positioning: OI change last hour
-    oi = hit.get("oi_chg_1h_pct")
-    if oi is not None: add(10 if oi >= 2 else 0 if oi > -2 else -5, f"OI 1h {oi:+.1f}%")
-    # 6) idiosyncratic vs beta
-    b = hit.get("btc_move_pct")
-    if b is not None: add(-10 if abs(b) >= 0.5 else 5, f"BTC same window {b:+.2f}%")
-    # 7) trend context (journal: fresh VWAP reclaim = chop, established = works)
+    # --- CONFIRMED by two journals (n≈115), full weight ---
     v1 = hit.get("vwap_1h_pct")
-    if v1 is not None and side == "LONG": add(10 if v1 > 3 else 3 if v1 > 1 else -10 if v1 > 0 else 0, f"1h VWAP {v1:+.1f}%")
-    conf = hit.get("above_all") if side == "LONG" else hit.get("below_all")
-    add(8 if conf else 0, f"EMA/VWAP {hit.get('tfs_confirming') or 0}/6")
-    # 8) impulse quality
+    if v1 is not None and side == "LONG": add(25 if v1 > 3 else 5 if v1 > 1 else -15 if v1 > 0 else 0, f"1h VWAP {v1:+.1f}%")
     ip, iv = hit.get("impulse_pct"), hit.get("impulse_vol_x")
-    if ip is not None: add(10 if abs(ip) >= 1.5 else 0, f"impulse {ip:.2f}%")
-    if iv is not None: add(8 if iv >= 5 else 0, f"on {iv:.1f}x vol")
-    # 9) funding aligned
-    f = hit.get("funding_8h_pct")
-    if f is not None:
-        hi_, ex = cfg["crypto"]["funding_high_pct"], cfg["crypto"]["funding_extreme_pct"]
-        aligned = -f if side == "LONG" else f
-        add(12 if aligned >= ex else 6 if aligned >= hi_ else -8 if aligned <= -ex else 0, f"funding {f:+.3f}%")
-    fl = hit.get("float_pct")
-    if fl is not None and fl < 30: add(5 if side == "LONG" else -10, "low float")
+    if ip is not None: add(15 if abs(ip) >= 1.5 else 5 if abs(ip) >= 1.0 else -15, f"impulse {ip:.2f}%")
+    if iv is not None: add(10 if iv >= 10 else 0, f"on {iv:.1f}x vol")
+    f = hit.get("funding_8h_pct")                       # journal: LONGS paying into an impulse = real demand
+    if f is not None and side == "LONG": add(10 if f >= 0.03 else 0, f"funding {f:+.3f}%")
+    # --- SUPPORTED by small sample (n≈19), half weight ---
+    vr = hit.get("vol_rank_24h")
+    if vr is not None: add(8 if vr <= 3 else -5 if vr > 10 else 0, f"vol rank #{vr}/24h")
+    s24 = hit.get("chg_24h_at_fire_pct")
+    if s24 is not None: add(8 if s24 < 5 else -8 if s24 > 20 else 0, f"24h stage {s24:+.0f}%")
+    # --- HYPOTHESES still being tested, token weight or zero ---
+    if hit.get("new_24h_high"): add(5, "new 24h high")
+    c = hit.get("compression")
+    if c is not None: why.append(f"pre-spike vol {c:.2f}x (0, tracked)")
+    oi = hit.get("oi_chg_1h_pct")
+    if oi is not None: add(5 if oi >= 2 else 0, f"OI 1h {oi:+.1f}%")
+    b = hit.get("btc_move_pct")
+    if b is not None: add(-5 if abs(b) >= 0.5 else 0, f"BTC same window {b:+.2f}%")
+    if hit.get("macd_long_ok"): why.append("MACD✓ (0, tracked — negative twice)")
     if hit.get("news_link"): add(5, "catalyst")
-    if hit.get("macd_long_ok"): why.append("MACD✓ (0, tracked)")
+    fl = hit.get("float_pct")
+    if fl is not None and fl < 30 and side == "SHORT": add(-10, "low float")
 
     dt = dont_touch(hit, cfg)
     if dt:
