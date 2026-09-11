@@ -78,10 +78,12 @@ def mark(store: dict, prices: dict, now: float, retain_hours: float, btc_px: flo
     """Update current price, signed perf, alpha vs BTC, MFE/MAE, path order, checkpoints; prune expired."""
     for key in list(store):
         row = store[key]
-        if now - row["first_seen"] > retain_hours * 3600:
-            del store[key]; continue
+        if row.get("archived"):
+            continue                                   # frozen: all checkpoints captured, kept forever for fitting
+        expire = now - row["first_seen"] > retain_hours * 3600 and now - row["first_seen"] > max(CHECKPOINTS.values())
         px = prices.get(key)
         if not px:
+            if expire: row["archived"] = True
             continue
         side, entry = row.get("entry_side"), row.get("entry_price")
         row["cur_price"] = px
@@ -101,6 +103,8 @@ def mark(store: dict, prices: dict, now: float, retain_hours: float, btc_px: flo
             if age >= secs and row.get(f"perf_{name}") is None:
                 row[f"perf_{name}"] = row["perf_pct"]
                 row[f"alpha_{name}"] = row.get("alpha_pct")
+        if expire:
+            row["archived"] = True
 
 
 def _wilson(k, n, z=1.96):

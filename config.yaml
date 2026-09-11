@@ -7,11 +7,6 @@ impulse:                         # PRIMARY TRIGGER — sudden move + volume on 5
   vol_multiple: 3.0              # candle volume ÷ avg per-candle volume (range 2–5)
   avg_lookback_days: 3           # range 2–4
   cold_start_assets: 25          # crypto: how many top-volume perps to seed with candles on first load
-stock_impulse:                   # stocks move slower per candle — separate thresholds
-  min_move_pct: 2.0
-  candles: 3
-  vol_multiple: 3.0
-  avg_lookback_days: 5
 daily_movers:                    # OPTIONAL secondary trigger (old behaviour)
   enabled: false
   move_pct: 10
@@ -27,6 +22,11 @@ stocks:
   min_market_cap_usd: 50000000   # micro (≥$50M) through mid cap
   min_day_change_pct: 2          # pre-filter before checking 5m impulse
   max_candidates: 40
+stock_impulse:                   # stocks move slower per candle — separate thresholds
+  min_move_pct: 2.0
+  candles: 3
+  vol_multiple: 3.0
+  avg_lookback_days: 5
 macd: {fast: 12, slow: 26, signal: 9, cross_lookback: 3}
 timeframes: ["5m", "30m", "1h"]
 weights: {move: 1.0, rvol: 1.5, extension: 1.0, funding: 1.0, liquidation: 1.0}

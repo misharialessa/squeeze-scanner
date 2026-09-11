@@ -100,7 +100,11 @@ except Exception:
 prices.update({("stock", t): p for t, p in stock_src.last_prices([k[1] for k in store if k[0] == "stock"]).items()})
 tracker.mark(store, prices, now_ts, cfg["retain_hours"], btc_now)
 tracker.save(store)
-df = pd.DataFrame(list(store.values()))
+df_all = pd.DataFrame(list(store.values()))
+if not df_all.empty and "archived" not in df_all:
+    df_all["archived"] = False
+df = df_all[~df_all["archived"].fillna(False)].copy() if not df_all.empty else df_all
+n_archived = int(df_all["archived"].fillna(False).sum()) if not df_all.empty else 0
 if not df.empty:
     df["live"] = (now_ts - df["last_seen"]) < cfg["refresh_seconds"] * 1.5
     tz_ = ZoneInfo(cfg["timezone"])
@@ -111,7 +115,7 @@ if not df.empty:
 
 now_local = datetime.now(ZoneInfo(cfg["timezone"])).strftime("%H:%M:%S %Z")
 seeding = len(next(iter(price_ledger().values()), [])) <= 1
-st.caption(f"Last scan {now_local} · {len(new) if not new.empty else 0} new/refired · {len(df)} retained (last {cfg['retain_hours']}h)" + (" · warming up price ledger (first refresh seeds top-volume perps)" if seeding else ""))
+st.caption(f"Last scan {now_local} · {len(new) if not new.empty else 0} new/refired · {len(df)} on screen (last {cfg['retain_hours']}h) · {n_archived} archived · {len(df_all)} total in journal" + (" · warming up price ledger (first refresh seeds top-volume perps)" if seeding else ""))
 
 with st.expander("Diagnostics — what the scanner checked this refresh", expanded=df.empty):
     c1, c2, c3, c4 = st.columns(4)
@@ -129,6 +133,10 @@ with st.expander("Diagnostics — what the scanner checked this refresh", expand
                      column_config={"move_pct": st.column_config.NumberColumn("Move %", format="%.2f%%"),
                                     "vol_x": st.column_config.NumberColumn("Vol ×", format="%.1fx")})
 
+if df.empty and not df_all.empty:
+    with st.expander("📊 Scanner effectiveness (all history)", expanded=True):
+        st.dataframe(tracker.effectiveness(df_all), hide_index=True, use_container_width=True)
+        st.download_button("Download full journal CSV", df_all.drop(columns=["flags"], errors="ignore").to_csv(index=False), "signals_journal.csv", key="dl_empty")
 if df.empty:
     st.info("Nothing retained yet. Check Diagnostics above: if candles fetched is 0, Hyperliquid is rate-limiting; "
             "if near-misses show small moves, the market is simply quiet.")
@@ -142,12 +150,12 @@ df = df.sort_values(["live", "first_seen"], ascending=[False, False]).reset_inde
 
 # ---- effectiveness ----
 with st.expander("📊 Scanner effectiveness (signed: + means the original call was right)", expanded=False):
-    eff = tracker.effectiveness(df)
+    eff = tracker.effectiveness(df_all)          # ALL history, archived included
     if eff.empty:
         st.caption("Needs signals that have aged past the first checkpoint (15 min).")
     else:
         st.dataframe(eff, hide_index=True, use_container_width=True)
-    st.download_button("Download journal CSV", df.drop(columns=["flags"], errors="ignore").to_csv(index=False), "signals_journal.csv")
+    st.download_button("Download full journal CSV", df_all.drop(columns=["flags"], errors="ignore").to_csv(index=False), "signals_journal.csv")
 if min_rvol:
     df = df[df["rvol"].fillna(0) >= min_rvol]
 if min_potential:
