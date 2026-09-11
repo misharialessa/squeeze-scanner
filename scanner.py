@@ -103,8 +103,10 @@ tracker.save(store)
 df_all = pd.DataFrame(list(store.values()))
 if not df_all.empty and "archived" not in df_all:
     df_all["archived"] = False
-df = df_all[~df_all["archived"].fillna(False)].copy() if not df_all.empty else df_all
-n_archived = int(df_all["archived"].fillna(False).sum()) if not df_all.empty else 0
+if not df_all.empty:
+    df_all["archived"] = df_all["archived"].apply(lambda v: bool(v) if v is not None and v == v else False).astype(bool)
+df = df_all[~df_all["archived"]].copy() if not df_all.empty else df_all
+n_archived = int(df_all["archived"].sum()) if not df_all.empty else 0
 if not df.empty:
     df["live"] = (now_ts - df["last_seen"]) < cfg["refresh_seconds"] * 1.5
     tz_ = ZoneInfo(cfg["timezone"])
