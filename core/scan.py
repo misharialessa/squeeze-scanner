@@ -74,9 +74,9 @@ def crypto_candidates(cfg, ledger: dict, snap: pd.DataFrame) -> list[str]:
     return sorted(cands)
 
 
-def _near_miss(b5, cfg):
+def _near_miss(b5, cfg, asset="crypto"):
     """Best move over the last 1..N candles and the spike volume multiple, regardless of thresholds."""
-    i = cfg["impulse"]
+    i = cfg["stock_impulse"] if asset == "stock" else cfg["impulse"]
     n = int(i["avg_lookback_days"] * 288)
     if b5 is None or len(b5) < 30:
         return None
@@ -132,25 +132,29 @@ def scan_crypto(cfg, ledger: dict, diag: dict) -> list[dict]:
 
 # ---------------- stocks ----------------
 
-def scan_stocks(cfg) -> list[dict]:
+def scan_stocks(cfg, diag: dict) -> list[dict]:
     s = cfg["stocks"]
-    cands = stocks.movers(s["finviz_cap"], s["min_day_change_pct"], s["max_candidates"])
+    cands, info = stocks.movers(s["finviz_cap"], s["min_day_change_pct"], s["max_candidates"], s["min_market_cap_usd"])
+    diag.update(info); diag.update(stock_candidates=len(cands), stock_checked=0, stock_impulses=0, stock_near=[])
     hits = []
-    scan_stocks.diag = {"stock_candidates": len(cands)}
     for _, row in cands.iterrows():
         hit = row.to_dict(); hit["asset"] = "stock"
         try:
             d = stocks.detail(hit["ticker"])
-        except Exception:
+        except Exception as e:
+            diag["stock_error"] = f"detail {hit['ticker']}: {str(e)[:80]}"
             continue
         b5 = d["bars_5m"]
+        diag["stock_checked"] += 1
+        if len(b5):
+            nm = _near_miss(b5, cfg, "stock")
+            if nm: diag["stock_near"].append({"ticker": hit["ticker"], **nm})
         imp = _impulse(b5, cfg, "stock") if len(b5) else None
+        if imp: diag["stock_impulses"] += 1
         daily_hit = cfg["daily_movers"]["enabled"] and abs(hit.get("change_pct") or 0) >= cfg["daily_movers"]["move_pct"]
         if not imp and not daily_hit:
             continue
-        if (d.get("market_cap") or 0) and d["market_cap"] < s["min_market_cap_usd"]:
-            continue
-        hit["market_cap_usd"] = d.get("market_cap")
+        hit["market_cap_usd"] = d.get("market_cap") or hit.get("market_cap")
         hit["trigger"] = "impulse" if imp else "daily"; hit.update(imp or {})
         ctx = {"config": cfg, "bars_5m": b5, "bars_30m": resample(b5, "30min"), "bars_1h": resample(b5, "1h")}
         hit["rvol"] = rvol(hit.get("volume") or 0, d["prior_daily_vols"])
@@ -162,7 +166,7 @@ def scan_stocks(cfg) -> list[dict]:
 
 def run(cfg, ledger: dict, diag: dict) -> pd.DataFrame:
     rows = []
-    for enabled, fn, args in ((cfg["crypto"]["enabled"], scan_crypto, (cfg, ledger, diag)), (cfg["stocks"]["enabled"], scan_stocks, (cfg,))):
+    for enabled, fn, args in ((cfg["crypto"]["enabled"], scan_crypto, (cfg, ledger, diag)), (cfg["stocks"]["enabled"], scan_stocks, (cfg, diag))):
         if enabled:
             try:
                 rows += fn(*args)

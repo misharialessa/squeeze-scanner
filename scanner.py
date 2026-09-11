@@ -124,10 +124,17 @@ with st.expander("Diagnostics — what the scanner checked this refresh", expand
     c1.metric("Crypto candidates", diag.get("crypto_candidates", 0))
     c2.metric("Candles fetched", diag.get("candles_ok", 0))
     c3.metric("Candle errors", diag.get("candles_err", 0))
-    c4.metric("Stock candidates", getattr(__import__("core.scan", fromlist=["scan_stocks"]).scan_stocks, "diag", {}).get("stock_candidates", "—"))
-    for k in ("last_err", "scan_crypto_error", "scan_stocks_error"):
+    c4.metric("Stock candidates", diag.get("stock_candidates", "—"))
+    st.caption(f"Stocks: source = {diag.get('stock_source') or 'none'} · bars checked {diag.get('stock_checked', 0)} · impulses {diag.get('stock_impulses', 0)}"
+               + (" · US market closed (16:30–23:00 Kuwait)" if not (13 <= datetime.now(ZoneInfo('UTC')).hour < 20) else ""))
+    for k in ("last_err", "scan_crypto_error", "scan_stocks_error", "stock_error"):
         if diag.get(k):
             st.code(f"{k}: {diag[k]}")
+    sn = pd.DataFrame(diag.get("stock_near", []))
+    if len(sn):
+        st.caption("Stocks closest to trigger:")
+        st.dataframe(sn.sort_values("move_pct", ascending=False).head(10), hide_index=True, use_container_width=True,
+                     column_config={"move_pct": st.column_config.NumberColumn("Move %", format="%.2f%%"), "vol_x": st.column_config.NumberColumn("Vol ×", format="%.1fx")})
     nm = pd.DataFrame(diag.get("near_misses", []))
     if len(nm):
         st.caption("Closest to trigger (move over last 2 candles · spike volume ÷ 3-day per-candle avg):")
