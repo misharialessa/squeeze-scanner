@@ -21,30 +21,49 @@ def movers(cap="midunder", min_move=2, max_candidates=40, min_cap_usd=5e7, max_c
     """US gainers, micro→mid cap. Finnhub → Yahoo predefined → Finviz. Returns (df, diag)."""
     info = {"stock_source": None, "stock_error": None}
     fk = os.getenv("FINNHUB_API_KEY")
-    # --- Finnhub: one call for the whole US market's daily change ---
     if fk:
+        base = "https://finnhub.io/api/v1"
+        # 1) try the movers endpoint (premium on some plans) — tolerate empty/non-JSON
         try:
-            j = requests.get("https://finnhub.io/api/v1/stock/market-movers",
-                             params={"exchange": "US", "token": fk}, timeout=20)
-            if j.status_code == 403:                       # endpoint not on free tier → fall through
-                info["stock_error"] = "finnhub: movers endpoint not on your plan"
-            else:
-                data = j.json()
-                pool = (data.get("gainers") or []) if isinstance(data, dict) else (data or [])
-                rows = [{"ticker": x.get("symbol"), "price": x.get("price") or x.get("last"),
-                         "change_pct": x.get("changePercent") or x.get("change_percent") or x.get("perc"),
-                         "volume": x.get("volume"), "market_cap": x.get("marketCap")} for x in pool]
-                df = _norm(rows, min_move, min_cap_usd, max_cap_usd, max_candidates)
-                if len(df):
-                    info["stock_source"] = f"finnhub ({len(df)})"
-                    return df, info
-                if not info["stock_error"]:
-                    info["stock_error"] = "finnhub: 0 gainers matched"
+            r = requests.get(f"{base}/stock/market-movers", params={"exchange": "US", "token": fk}, timeout=20)
+            data = r.json() if r.status_code == 200 and r.text.strip() else None
+            pool = (data.get("gainers") if isinstance(data, dict) else data) or []
+            rows = [{"ticker": x.get("symbol"), "price": x.get("price") or x.get("last"),
+                     "change_pct": x.get("changePercent") or x.get("perc"), "volume": x.get("volume"),
+                     "market_cap": x.get("marketCap")} for x in pool]
+            df = _norm(rows, min_move, min_cap_usd, max_cap_usd, max_candidates)
+            if len(df):
+                info["stock_source"] = f"finnhub movers ({len(df)})"; return df, info
+        except Exception:
+            pass
+        # 2) free-tier path: quote a cached small/mid-cap universe, keep gainers
+        try:
+            global _FH_UNIV
+            if "_FH_UNIV" not in globals() or not _FH_UNIV:
+                syms = requests.get(f"{base}/stock/symbol", params={"exchange": "US", "token": fk}, timeout=25).json()
+                _FH_UNIV = [x["symbol"] for x in syms if x.get("type") == "Common Stock" and x.get("symbol") and "." not in x["symbol"]]
+            import concurrent.futures as cf
+            def q(sym):
+                try:
+                    d = requests.get(f"{base}/quote", params={"symbol": sym, "token": fk}, timeout=8).json()
+                    return {"ticker": sym, "price": d.get("c"), "change_pct": d.get("dp"), "volume": None, "market_cap": None} if d.get("dp") is not None else None
+                except Exception:
+                    return None
+            universe = _FH_UNIV[:1200]                     # ~40s at 60 req/s; covers most active names
+            rows = []
+            with cf.ThreadPoolExecutor(max_workers=25) as ex:
+                for res in ex.map(q, universe):
+                    if res and res["change_pct"] is not None and res["change_pct"] >= min_move:
+                        rows.append(res)
+            df = pd.DataFrame(rows).sort_values("change_pct", ascending=False).head(max_candidates).reset_index(drop=True) if rows else pd.DataFrame()
+            if len(df):
+                info["stock_source"] = f"finnhub quotes ({len(df)})"; return df, info
+            info["stock_error"] = "finnhub: no gainers ≥ threshold (market closed?)"
         except Exception as e:
-            info["stock_error"] = f"finnhub: {str(e)[:110]}"
+            info["stock_error"] = f"finnhub quotes: {str(e)[:110]}"
     else:
         info["stock_error"] = "no FINNHUB_API_KEY set"
-    # --- Yahoo predefined screens (no auth crumb needed) ---
+    # --- Yahoo predefined screens    # --- Yahoo predefined screens (no auth crumb needed) ---
     try:
         rows = []
         for name in ("day_gainers", "small_cap_gainers"):
