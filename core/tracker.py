@@ -7,7 +7,8 @@ JOURNAL = "signals_journal.json"
 CHECKPOINTS = {"15m": 900, "1h": 3600, "4h": 14400, "24h": 86400}
 FROZEN = ["side", "potential", "price", "change_pct", "impulse_pct", "impulse_vol_x", "funding_8h_pct", "float_pct",
           "rvol", "macd_long_ok", "short_risk", "trigger", "why", "vwap_1h_pct", "tfs_confirming",
-          "new_24h_high", "range_pos_24h", "compression", "vol_rank_24h", "chg_24h_at_fire_pct", "oi_chg_1h_pct", "btc_move_pct"]
+          "new_24h_high", "range_pos_24h", "compression", "vol_rank_24h", "chg_24h_at_fire_pct", "oi_chg_1h_pct", "btc_move_pct",
+          "breadth_pct", "btc_24h_pct", "btc_4h_pct", "btc_px"]
 
 
 def load() -> dict:
@@ -73,8 +74,8 @@ def ingest(store: dict, new_rows: list[dict], now: float):
             store[key] = row
 
 
-def mark(store: dict, prices: dict, now: float, retain_hours: float):
-    """Update current price, signed perf, MFE/MAE, checkpoints; prune expired."""
+def mark(store: dict, prices: dict, now: float, retain_hours: float, btc_px: float | None = None):
+    """Update current price, signed perf, alpha vs BTC, MFE/MAE, path order, checkpoints; prune expired."""
     for key in list(store):
         row = store[key]
         if now - row["first_seen"] > retain_hours * 3600:
@@ -89,10 +90,27 @@ def mark(store: dict, prices: dict, now: float, retain_hours: float):
         row["high"] = max(row.get("high") or px, px); row["low"] = min(row.get("low") or px, px)
         row["mfe_pct"] = signed(side, entry, row["high"] if side != "SHORT" else row["low"])
         row["mae_pct"] = signed(side, entry, row["low"] if side != "SHORT" else row["high"])
+        if btc_px and row.get("entry_btc_px"):
+            btc_move = (btc_px / row["entry_btc_px"] - 1) * 100
+            row["alpha_pct"] = round(row["perf_pct"] - (btc_move if side != "SHORT" else -btc_move), 2)
+        if row.get("first_to_2pct") is None:
+            if row["mfe_pct"] is not None and row["mfe_pct"] >= 2: row["first_to_2pct"] = "TP"
+            elif row["mae_pct"] is not None and row["mae_pct"] <= -2: row["first_to_2pct"] = "SL"
         age = now - row["first_seen"]
         for name, secs in CHECKPOINTS.items():
             if age >= secs and row.get(f"perf_{name}") is None:
                 row[f"perf_{name}"] = row["perf_pct"]
+                row[f"alpha_{name}"] = row.get("alpha_pct")
+
+
+def _wilson(k, n, z=1.96):
+    if n == 0: return ""
+    p = k / n; den = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / den; h = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / den
+    return f"{max(0, c - h) * 100:.0f}–{min(1, c + h) * 100:.0f}%"
+
+
+MIN_N = 20
 
 
 def effectiveness(df: pd.DataFrame) -> pd.DataFrame:
@@ -110,20 +128,26 @@ def effectiveness(df: pd.DataFrame) -> pd.DataFrame:
     d["cmp_b"] = pd.cut(num("entry_compression"), [-1, 0.6, 0.9, 1.3, 99], labels=["coiled <0.6", "0.6–0.9", "0.9–1.3", "noisy >1.3"])
     d["vr_b"] = pd.cut(num("entry_vol_rank_24h"), [0, 1, 3, 10, 999], labels=["vol #1", "vol #2–3", "vol #4–10", "vol >10"])
     d["stage_b"] = pd.cut(num("entry_chg_24h_at_fire_pct").abs(), [-1, 5, 20, 999], labels=["stage <5%", "5–20%", ">20%"])
-    d["oi_b"] = pd.cut(num("entry_oi_chg_1h_pct"), [-999, -2, 2, 999], labels=["OI falling", "OI flat", "OI rising"])
+    d["oi_b"] = pd.cut(num("entry_oi_chg_1h_pct"), [-999, -1, 3, 999], labels=["OI ≤-1%", "OI -1..3%", "OI ≥3%"])
+    d["vx_b"] = pd.cut(num("entry_impulse_vol_x"), [0, 5, 10, 999], labels=["vol <5x", "vol 5–10x", "vol ≥10x"])
+    d["br_b"] = pd.cut(num("entry_breadth_pct"), [-1, 40, 60, 101], labels=["breadth <40%", "breadth 40–60%", "breadth >60%"])
+    d["b4_b"] = pd.cut(num("entry_btc_4h_pct"), [-999, -1, 1, 999], labels=["BTC 4h <-1%", "BTC 4h flat", "BTC 4h >+1%"])
+    d["path_b"] = d.get("first_to_2pct", pd.Series(index=d.index)).fillna("neither ±2%").map({"TP": "+2% first", "SL": "-2% first"}).fillna("neither ±2%")
     groups = [("All", d), *[(f"Side {s}", g) for s, g in d.groupby("entry_side")]]
-    for col in ("vwap_b", "hi_b", "cmp_b", "vr_b", "stage_b", "oi_b"):
+    for col in ("vwap_b", "vx_b", "oi_b", "br_b", "b4_b", "path_b", "hi_b", "cmp_b", "vr_b", "stage_b"):
         groups += [(str(b), g) for b, g in d.groupby(col, observed=True)]
     groups += [
               *[(f"Potential {b}", g) for b, g in d.groupby("bucket", observed=True)],
               *[(m, g) for m, g in d.groupby("macd")]]
     rows = []
     for name, g in groups:
-        r = {"segment": name, "n": len(g)}
+        r = {"segment": name if len(g) >= MIN_N else f"{name} (n<{MIN_N})", "n": len(g)}
         for cp in ["15m", "1h", "4h", "24h"]:
             v = pd.to_numeric(g[f"perf_{cp}"], errors="coerce").dropna() if f"perf_{cp}" in g else pd.Series(dtype=float)
-            r[f"win {cp}"] = f"{(v > 0).mean() * 100:.0f}%" if len(v) else "—"
+            r[f"win {cp}"] = f"{(v > 0).mean() * 100:.0f}% [{_wilson(int((v > 0).sum()), len(v))}]" if len(v) else "—"
             r[f"avg {cp}"] = f"{v.mean():+.1f}%" if len(v) else "—"
+            a = pd.to_numeric(g[f"alpha_{cp}"], errors="coerce").dropna() if f"alpha_{cp}" in g else pd.Series(dtype=float)
+            if cp in ("1h", "4h"): r[f"alpha {cp}"] = f"{a.mean():+.1f}%" if len(a) else "—"
         for k in ("mfe_pct", "mae_pct"):
             v = pd.to_numeric(g[k], errors="coerce").dropna() if k in g else pd.Series(dtype=float)
             r["avg " + k[:3].upper()] = f"{v.mean():+.1f}%" if len(v) else "—"

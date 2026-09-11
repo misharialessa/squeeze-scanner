@@ -18,8 +18,9 @@ crypto:
   dont_touch: {move_pct: 50, float_pct: 30, funding_pct: -0.30}
 stocks:
   enabled: true
-  finviz_cap: midunder           # nano→mid cap
-  min_day_change_pct: 3          # pre-filter before checking 5m impulse
+  finviz_cap: midunder           # nano→mid on the screener; nano removed below
+  min_market_cap_usd: 50000000   # micro (≥$50M) through mid cap
+  min_day_change_pct: 2          # pre-filter before checking 5m impulse
   max_candidates: 40
 macd: {fast: 12, slow: 26, signal: 9, cross_lookback: 3}
 timeframes: ["5m", "30m", "1h"]

@@ -54,6 +54,7 @@ def detail(ticker: str) -> dict:
     fl, so = info.get("floatShares"), info.get("sharesOutstanding")
     news = [(n.get("title"), n.get("link")) for n in (t.news or [])[:3]]
     return {
+        "market_cap": info.get("marketCap"),
         "float_shares": fl,
         "float_pct": round(fl / so * 100, 1) if fl and so else None,
         "short_pct_float": info.get("shortPercentOfFloat"),

@@ -15,9 +15,23 @@ def _run_metrics(hit, asset, ctx):
     return hit
 
 
-def _impulse(b5, cfg):
-    i = cfg["impulse"]
+def _impulse(b5, cfg, asset="crypto"):
+    i = cfg["stock_impulse"] if asset == "stock" else cfg["impulse"]
     return impulse(b5, i["min_move_pct"], i["candles"], i["vol_multiple"], i["avg_lookback_days"])
+
+
+def regime(snap: pd.DataFrame) -> dict:
+    """Market context at fire time — tracked on every signal so we can condition on it later."""
+    out = {"breadth_pct": None, "btc_24h_pct": None, "btc_4h_pct": None, "btc_px": None}
+    try:
+        out["breadth_pct"] = round((snap["change_pct"] > 0).mean() * 100, 1)
+        out["btc_24h_pct"] = float(snap.loc[snap["ticker"] == "BTC", "change_pct"].iloc[0])
+        out["btc_px"] = float(snap.loc[snap["ticker"] == "BTC", "price"].iloc[0])
+        b = hl.candles("BTC", "1h", 6)
+        out["btc_4h_pct"] = round((float(b["close"].iloc[-1]) / float(b["open"].iloc[-5]) - 1) * 100, 2) if len(b) >= 5 else None
+    except Exception:
+        pass
+    return out
 
 
 # ---------------- crypto ----------------
@@ -75,6 +89,7 @@ def _near_miss(b5, cfg):
 
 def scan_crypto(cfg, ledger: dict, diag: dict) -> list[dict]:
     snap = hl.universe_snapshot().set_index("ticker")
+    reg = regime(snap.reset_index())
     cands = crypto_candidates(cfg, ledger, snap.reset_index())
     diag.update(crypto_candidates=len(cands), candles_ok=0, candles_err=0, last_err=None, near_misses=[])
     hits = []
@@ -96,7 +111,7 @@ def scan_crypto(cfg, ledger: dict, diag: dict) -> list[dict]:
         if not imp and not daily_hit:
             continue
         hit = snap.loc[coin].to_dict(); hit["ticker"] = coin; hit["asset"] = "crypto"; hit["trigger"] = "impulse" if imp else "daily"
-        hit.update(imp or {})
+        hit.update(imp or {}); hit.update(reg)
         trail = ledger.get(("oi", coin)) or []
         old = [(t, v) for t, v in trail if time.time() - t >= 3000]
         hit["oi_chg_1h_pct"] = round((trail[-1][1] / old[0][1] - 1) * 100, 2) if trail and old and old[0][1] else None
@@ -129,10 +144,13 @@ def scan_stocks(cfg) -> list[dict]:
         except Exception:
             continue
         b5 = d["bars_5m"]
-        imp = _impulse(b5, cfg) if len(b5) else None
+        imp = _impulse(b5, cfg, "stock") if len(b5) else None
         daily_hit = cfg["daily_movers"]["enabled"] and abs(hit.get("change_pct") or 0) >= cfg["daily_movers"]["move_pct"]
         if not imp and not daily_hit:
             continue
+        if (d.get("market_cap") or 0) and d["market_cap"] < s["min_market_cap_usd"]:
+            continue
+        hit["market_cap_usd"] = d.get("market_cap")
         hit["trigger"] = "impulse" if imp else "daily"; hit.update(imp or {})
         ctx = {"config": cfg, "bars_5m": b5, "bars_30m": resample(b5, "30min"), "bars_1h": resample(b5, "1h")}
         hit["rvol"] = rvol(hit.get("volume") or 0, d["prior_daily_vols"])
