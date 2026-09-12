@@ -59,3 +59,31 @@ def daily_volumes(coin: str, days: int = 6) -> pd.Series:
 def all_mids() -> dict:
     """{coin: mid price} — cheapest call; used for the rolling price ledger."""
     return {k: float(v) for k, v in _post({"type": "allMids"}).items() if not k.startswith("@")}
+
+
+def microstructure(coin: str) -> dict:
+    """Book + tape at this instant: spread, depth within 1%, imbalance, taker buy ratio. Cheap calls (weight 2 / 20)."""
+    out = {"spread_bps": None, "depth_1pct_usd": None, "book_imbalance": None, "taker_buy_ratio": None, "trades_5m_usd": None}
+    try:
+        book = _post({"type": "l2Book", "coin": coin})
+        bids, asks = book["levels"][0], book["levels"][1]
+        bb, ba = float(bids[0]["px"]), float(asks[0]["px"])
+        mid = (bb + ba) / 2
+        out["spread_bps"] = round((ba - bb) / mid * 1e4, 1)
+        bid_d = sum(float(l["px"]) * float(l["sz"]) for l in bids if float(l["px"]) >= mid * 0.99)
+        ask_d = sum(float(l["px"]) * float(l["sz"]) for l in asks if float(l["px"]) <= mid * 1.01)
+        out["depth_1pct_usd"] = round(bid_d + ask_d)
+        out["book_imbalance"] = round((bid_d - ask_d) / (bid_d + ask_d), 3) if bid_d + ask_d else None
+    except Exception:
+        pass
+    try:
+        tr = _post({"type": "recentTrades", "coin": coin}) or []
+        cutoff = time.time() * 1000 - 5 * 60_000
+        tr = [t for t in tr if float(t.get("time", 0)) >= cutoff] or tr[-50:]
+        buy = sum(float(t["px"]) * float(t["sz"]) for t in tr if t.get("side") == "B")
+        tot = sum(float(t["px"]) * float(t["sz"]) for t in tr)
+        out["taker_buy_ratio"] = round(buy / tot, 3) if tot else None
+        out["trades_5m_usd"] = round(tot)
+    except Exception:
+        pass
+    return out

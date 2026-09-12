@@ -8,7 +8,9 @@ CHECKPOINTS = {"15m": 900, "1h": 3600, "4h": 14400, "24h": 86400}
 FROZEN = ["side", "potential", "price", "change_pct", "impulse_pct", "impulse_vol_x", "funding_8h_pct", "float_pct",
           "rvol", "macd_long_ok", "short_risk", "trigger", "why", "vwap_1h_pct", "tfs_confirming",
           "new_24h_high", "range_pos_24h", "compression", "vol_rank_24h", "chg_24h_at_fire_pct", "oi_chg_1h_pct", "btc_move_pct",
-          "breadth_pct", "btc_24h_pct", "btc_4h_pct", "btc_px"]
+          "breadth_pct", "btc_24h_pct", "btc_4h_pct", "btc_px", "oi_chg_15m_pct", "spread_bps", "depth_1pct_usd", "book_imbalance",
+          "taker_buy_ratio", "trades_5m_usd", "prior_1h_ret_pct", "prior_4h_ret_pct", "prior_24h_ret_pct", "rv_24h_pct", "range_pos_3d",
+          "concurrent_signals", "session", "ema9_5m_pct", "vwap_5m_pct", "ema9_30m_pct", "vwap_30m_pct", "ema9_1h_pct", "open_interest", "vol_24h_usd"]
 
 
 def load() -> dict:
@@ -103,6 +105,8 @@ def mark(store: dict, prices: dict, now: float, retain_hours: float, btc_px: flo
             if age >= secs and row.get(f"perf_{name}") is None:
                 row[f"perf_{name}"] = row["perf_pct"]
                 row[f"alpha_{name}"] = row.get("alpha_pct")
+                row[f"mfe_{name}"] = row["mfe_pct"]          # excursions frozen per horizon → no age leakage
+                row[f"mae_{name}"] = row["mae_pct"]
         if expire:
             row["archived"] = True
 

@@ -1,6 +1,6 @@
 import time
 import pandas as pd
-from core.indicators import resample, rvol, impulse
+from core.indicators import resample, rvol, impulse, history_context
 from core.metrics import METRICS, checklist
 from sources import hyperliquid as hl, stocks, crypto_extras, cmc
 
@@ -111,10 +111,14 @@ def scan_crypto(cfg, ledger: dict, diag: dict) -> list[dict]:
         if not imp and not daily_hit:
             continue
         hit = snap.loc[coin].to_dict(); hit["ticker"] = coin; hit["asset"] = "crypto"; hit["trigger"] = "impulse" if imp else "daily"
-        hit.update(imp or {}); hit.update(reg)
+        hit.update(imp or {}); hit.update(reg); hit.update(history_context(b5, cfg["impulse"]["candles"]))
         trail = ledger.get(("oi", coin)) or []
         old = [(t, v) for t, v in trail if time.time() - t >= 3000]
         hit["oi_chg_1h_pct"] = round((trail[-1][1] / old[0][1] - 1) * 100, 2) if trail and old and old[0][1] else None
+        old15 = [(t, v) for t, v in trail if time.time() - t >= 780]
+        hit["oi_chg_15m_pct"] = round((trail[-1][1] / old15[-1][1] - 1) * 100, 2) if trail and old15 and old15[-1][1] else None
+        hit.update(hl.microstructure(coin))
+        hit["session"] = "asia" if 0 <= time.gmtime().tm_hour < 7 else "eu" if 7 <= time.gmtime().tm_hour < 13 else "us" if 13 <= time.gmtime().tm_hour < 21 else "late"
         hit["btc_move_pct"] = _btc_move(ledger, cfg["impulse"]["candles"] * 300)
         ctx = {"config": cfg, "bars_5m": b5, "bars_30m": resample(b5, "30min"), "bars_1h": resample(b5, "1h")}
         today = b5[b5.index.date == b5.index[-1].date()]["volume"].sum()
@@ -127,6 +131,8 @@ def scan_crypto(cfg, ledger: dict, diag: dict) -> list[dict]:
         n = crypto_extras.news(coin)
         hit["news"], hit["news_link"] = (n[0][0], n[0][1]) if n else (None, None)
         hits.append(_run_metrics(hit, "crypto", ctx))
+    for h in hits:                                    # market-wide: how many fired together this refresh
+        h["concurrent_signals"] = len(hits)
     return hits
 
 
@@ -155,12 +161,14 @@ def scan_stocks(cfg, diag: dict) -> list[dict]:
         if not imp and not daily_hit:
             continue
         hit["market_cap_usd"] = d.get("market_cap") or hit.get("market_cap")
-        hit["trigger"] = "impulse" if imp else "daily"; hit.update(imp or {})
+        hit["trigger"] = "impulse" if imp else "daily"; hit.update(imp or {}); hit.update(history_context(b5, cfg["stock_impulse"]["candles"]))
         ctx = {"config": cfg, "bars_5m": b5, "bars_30m": resample(b5, "30min"), "bars_1h": resample(b5, "1h")}
         hit["rvol"] = rvol(hit.get("volume") or 0, d["prior_daily_vols"])
         hit.update({k: d[k] for k in ("float_shares", "float_pct", "short_pct_float")})
         hit["news"], hit["news_link"] = (d["news"][0][0], d["news"][0][1]) if d["news"] else (None, None)
         hits.append(_run_metrics(hit, "stock", ctx))
+    for h in hits:
+        h["concurrent_signals"] = len(hits)
     return hits
 
 

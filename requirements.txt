@@ -7,3 +7,4 @@ yfinance
 lxml
 python-dotenv
 pyyaml
+scikit-learn

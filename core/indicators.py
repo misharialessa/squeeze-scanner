@@ -105,3 +105,19 @@ def context(bars_5m: pd.DataFrame, impulse_candles: int = 2) -> dict:
     out["vol_rank_24h"] = int((day["volume"] > float(spike["volume"].max())).sum() + 1)
     out["chg_24h_at_fire_pct"] = round((last / float(day["open"].iloc[0]) - 1) * 100, 2)
     return out
+
+
+def history_context(bars_5m: pd.DataFrame, impulse_candles: int = 2) -> dict:
+    """The coin's own recent path before the fire: prior returns, realised vol, 3-day range position."""
+    out = {"prior_1h_ret_pct": None, "prior_4h_ret_pct": None, "prior_24h_ret_pct": None, "rv_24h_pct": None, "range_pos_3d": None}
+    if bars_5m is None or len(bars_5m) < 300:
+        return out
+    pre = bars_5m.iloc[:-impulse_candles]
+    c = pre["close"]; last = float(c.iloc[-1])
+    for name, n in (("prior_1h_ret_pct", 12), ("prior_4h_ret_pct", 48), ("prior_24h_ret_pct", 288)):
+        if len(c) > n: out[name] = round((last / float(c.iloc[-n - 1]) - 1) * 100, 2)
+    r = c.iloc[-288:].pct_change().dropna()
+    out["rv_24h_pct"] = round(float(r.std()) * (288 ** 0.5) * 100, 2) if len(r) > 20 else None
+    hi, lo = float(pre["high"].max()), float(pre["low"].min())
+    out["range_pos_3d"] = round((last - lo) / (hi - lo), 2) if hi > lo else None
+    return out

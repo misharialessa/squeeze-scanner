@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from streamlit_autorefresh import st_autorefresh
 from core.scan import run
 from core.metrics import rank_1_to_5
-from core import tracker, persist
+from core import tracker, persist, fit
 from sources import hyperliquid as hl, stocks as stock_src
 
 load_dotenv()
@@ -20,6 +20,11 @@ cfg = yaml.safe_load(open("config.yaml"))
 @st.cache_resource
 def price_ledger() -> dict:
     return {}       # rolling mid-price history; lives in the app process, shared across devices/tabs
+
+
+@st.cache_resource
+def models_store() -> dict:
+    return {"models": fit.load(), "report": None}
 
 
 @st.cache_resource
@@ -157,6 +162,28 @@ df["act"] = (df["potential"] >= 40) & (df["side"] == "LONG")
 df["confirmed"] = pd.to_numeric(df.get("impulses", 1), errors="coerce").fillna(1) >= 2
 df = df.sort_values(["live", "first_seen"], ascending=[False, False]).reset_index(drop=True)
 
+# ---- model fit (validated models only ever reach the score) ----
+ms = models_store()
+with st.expander("🧪 Model fit — day-blocked cross-validation on the full journal", expanded=False):
+    st.caption("A model is used live only if its out-of-sample AUC beats the shuffled-target ceiling with ≥250 signals. "
+               "Everything else is reported and ignored, by design.")
+    if st.button("Run fit now (30–90 s)"):
+        with st.spinner("Fitting…"):
+            try:
+                rep, val = fit.run(df_all, targets=("win", "tp"))
+                ms["report"] = rep
+                if val:
+                    fit.save(val); ms["models"] = val
+            except Exception:
+                st.code(traceback.format_exc())
+    if ms.get("report") is not None:
+        st.dataframe(ms["report"], hide_index=True, use_container_width=True)
+    if ms.get("models"):
+        st.success("Live models: " + ", ".join(f"{k} (AUC {v['auc']:.2f}, n={v['n']})" for k, v in ms["models"].items()))
+    else:
+        st.info("No validated model yet — score uses the three hand rules (VWAP reclaim, ≥10x vol, OI inflow).")
+df = fit.predict(ms.get("models", {}), df)
+
 # ---- effectiveness ----
 with st.expander("📊 Scanner effectiveness (signed: + means the original call was right)", expanded=False):
     eff = tracker.effectiveness(df_all)          # ALL history, archived included
@@ -183,9 +210,10 @@ tz = ZoneInfo(cfg["timezone"])
 if "impulse_time" in df:
     df["impulse_time"] = pd.to_datetime(df["impulse_time"], utc=True, errors="coerce").dt.tz_convert(tz).dt.strftime("%H:%M")
 df["ticker"] = df.apply(lambda r: ("🟢 " if r.get("live") else "") + str(r["ticker"]), axis=1)
-cols = ["potential", "side", "ticker", "asset", "first_seen_local", "age_min", "entry_price", "cur_price", "perf_pct",
+model_cols = [c for c in df.columns if c.startswith("model_p_")]
+cols = ["potential", *model_cols, "side", "ticker", "asset", "first_seen_local", "age_min", "entry_price", "cur_price", "perf_pct",
         "alpha_pct", "mfe_pct", "mae_pct", "first_to_2pct", "perf_15m", "perf_1h", "perf_4h", "perf_24h", "confirmed", "impulses", "impulse_time",
-        "breadth_pct", "btc_4h_pct",
+        "breadth_pct", "btc_4h_pct", "concurrent_signals", "taker_buy_ratio", "book_imbalance", "spread_bps",
         "new_24h_high", "compression", "vol_rank_24h", "chg_24h_at_fire_pct", "oi_chg_1h_pct", "btc_move_pct", "impulse_pct", "impulse_vol_x", "change_pct", "price", "volume",
         "float_pct", "funding_8h_pct", "funding_label", "short_risk", "macd_long_ok", "flags_txt", "why",
         "rvol", "market_cap_usd", "top_markets", "score_pct", "float_shares", "news_link",
@@ -201,7 +229,8 @@ def _c(v, rules):
 G, LG, R, O = "background-color:#1b7f3b;color:white", "background-color:#a8dcb5", "background-color:#c62828;color:white", "background-color:#f6b26b"
 PCT = [c for c in show.columns if c.endswith("_pct")]
 fmt = {c: "{:.1f}%" for c in PCT}
-fmt.update({"alpha_pct": "{:+.1f}%", "breadth_pct": "{:.0f}%", "btc_4h_pct": "{:+.1f}%", "compression": "{:.2f}x", "vol_rank_24h": "#{:.0f}", "entry_price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}", "cur_price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}",
+fmt.update({"model_p_15m": "{:.0%}", "model_p_1h": "{:.0%}", "model_p_4h": "{:.0%}", "model_p_24h": "{:.0%}",
+            "taker_buy_ratio": "{:.0%}", "book_imbalance": "{:+.2f}", "spread_bps": "{:.0f}", "alpha_pct": "{:+.1f}%", "breadth_pct": "{:.0f}%", "btc_4h_pct": "{:+.1f}%", "compression": "{:.2f}x", "vol_rank_24h": "#{:.0f}", "entry_price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}", "cur_price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}",
             "perf_pct": "{:+.1f}%", "mfe_pct": "{:+.1f}%", "mae_pct": "{:+.1f}%", "perf_15m": "{:+.1f}%", "perf_1h": "{:+.1f}%", "perf_4h": "{:+.1f}%", "perf_24h": "{:+.1f}%",
             "volume": "{:,.0f}", "float_shares": "{:,.0f}", "market_cap_usd": "{:,.0f}", "liq_above_usd": "{:,.0f}", "liq_below_usd": "{:,.0f}", "impulse_vol_x": "{:.1f}x", "potential": "{:.0f}", "score_pct": "{:.0f}%",
             "funding_8h_pct": "{:+.3f}%", "price": lambda v: f"{v:,.2f}" if v >= 1 else f"{v:.5f}"})
@@ -209,6 +238,7 @@ styled = show.style.format({k: v for k, v in fmt.items() if k in show.columns}, 
 if "potential" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 70, G), (lambda x: x >= 50, LG), (lambda x: x < 30, "background-color:#eeeeee")]), subset=["potential"])
 if "change_pct" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 30, G), (lambda x: x > 0, LG), (lambda x: x <= -30, R), (lambda x: x < 0, "background-color:#f4a6a6")]), subset=["change_pct"])
 if "rvol" in show: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 5, G), (lambda x: x >= 3, LG), (lambda x: x < 3, "background-color:#f4a6a6")]), subset=["rvol"])
+if model_cols: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 0.65, G), (lambda x: x >= 0.55, LG), (lambda x: x < 0.45, "background-color:#f4a6a6")]), subset=model_cols)
 PERF = [c for c in ("perf_pct", "alpha_pct", "perf_15m", "perf_1h", "perf_4h", "perf_24h", "mfe_pct", "mae_pct") if c in show.columns]
 if PERF: styled = styled.map(lambda v: _c(v, [(lambda x: x >= 5, G), (lambda x: x > 0, LG), (lambda x: x <= -5, R), (lambda x: x < 0, "background-color:#f4a6a6")]), subset=PERF)
 if "short_risk" in show: styled = styled.map(lambda v: {"EXTREME": R, "HIGH": O, "MED": "background-color:#fff2b3"}.get(v, ""), subset=["short_risk"])
@@ -230,6 +260,8 @@ st.dataframe(
     column_config={
         "entry_price": "Entry px", "cur_price": "Now px", "perf_pct": "Perf (signed)", "mfe_pct": "MFE", "mae_pct": "MAE",
         "perf_15m": "@15m", "perf_1h": "@1h", "perf_4h": "@4h", "perf_24h": "@24h",
+        "model_p_15m": "P(win 15m)", "model_p_1h": "P(win 1h)", "model_p_4h": "P(win 4h)", "model_p_24h": "P(win 24h)",
+        "taker_buy_ratio": "Taker buy %", "book_imbalance": "Book imb.", "spread_bps": "Spread bps", "concurrent_signals": "Fired together",
         "alpha_pct": "Alpha vs BTC", "first_to_2pct": "±2% first", "breadth_pct": "Breadth", "btc_4h_pct": "BTC 4h",
         "impulses": "Impulses", "confirmed": "2nd impulse", "new_24h_high": "New 24h hi", "compression": "Pre-spike vol",
         "vol_rank_24h": "Vol rank", "chg_24h_at_fire_pct": "24h @fire", "oi_chg_1h_pct": "OI 1h", "btc_move_pct": "BTC same win",
