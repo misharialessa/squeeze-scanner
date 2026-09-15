@@ -6,7 +6,6 @@ import yaml
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
-from streamlit_autorefresh import st_autorefresh
 from core.scan import run
 from core.metrics import rank_1_to_5
 from core import tracker, persist, fit
@@ -30,6 +29,14 @@ def models_store() -> dict:
 @st.cache_resource
 def hit_store() -> dict:
     return tracker.load()       # {(asset, ticker): row}; journaled to disk
+
+def _wait_and_rerun():
+    """Native auto-refresh: sleep then rerun. Widget clicks interrupt the sleep, so the sidebar stays responsive."""
+    if auto:
+        time.sleep(cfg["refresh_seconds"])
+        st.rerun()
+    st.stop()
+
 
 st.set_page_config(page_title="Squeeze Scanner", layout="wide")
 st.title("Momentum / Squeeze Scanner")
@@ -69,8 +76,6 @@ with st.sidebar:
     min_rvol = st.number_input("Min RVOL to show", 0.0, 1000.0, 0.0)
     min_potential = st.number_input("Min entry score to show", 0, 100, 0)
     auto = st.toggle("Auto-refresh", True)
-    if auto:
-        st_autorefresh(interval=cfg["refresh_seconds"] * 1000, key="tick")
     if st.button("Refresh now"):
         st.cache_data.clear()
 
@@ -83,7 +88,7 @@ try:
 except Exception:
     st.error("Scan failed — copy the traceback below and send it to Claude.")
     st.code(traceback.format_exc())
-    st.stop()
+    _wait_and_rerun()
 # ---- journal: ingest new signals, then mark everything to market ----
 store, now_ts = hit_store(), time.time()
 new_rows = [] if new.empty else new.to_dict("records")
@@ -154,7 +159,7 @@ if df.empty and not df_all.empty:
 if df.empty:
     st.info("Nothing retained yet. Check Diagnostics above: if candles fetched is 0, Hyperliquid is rate-limiting; "
             "if near-misses show small moves, the market is simply quiet.")
-    st.stop()
+    _wait_and_rerun()
 
 df["potential"] = pd.to_numeric(df["entry_potential"], errors="coerce")
 df["side"] = df["entry_side"]
@@ -291,4 +296,4 @@ for r in df.to_dict("records"):
         if r.get("error"):
             st.caption(f"data error: {r['error']}")
 
-
+_wait_and_rerun()
