@@ -81,10 +81,22 @@ with st.sidebar:
 
 
 
+SCAN_MODE = os.getenv("SCAN_MODE", "app")          # "cron" = GitHub Actions scans; app only displays
 diag = {}
 try:
-    with st.spinner("Scanning…"):
-        new = run(cfg, price_ledger(), diag)
+    if SCAN_MODE == "cron":
+        remote = tracker.load()                        # fresh copy from the journal branch
+        if remote:
+            hit_store().clear(); hit_store().update(remote)
+        new = pd.DataFrame()
+        rep = persist.load_remote("fit_report.json")
+        if rep: models_store()["report"] = pd.DataFrame(rep)
+        mw = persist.load_remote(fit.MODEL_FILE)
+        if mw:
+            import json as _json; _json.dump(mw, open(fit.MODEL_FILE, "w")); models_store()["models"] = fit.load()
+    else:
+        with st.spinner("Scanning…"):
+            new = run(cfg, price_ledger(), diag)
 except Exception:
     st.error("Scan failed — copy the traceback below and send it to Claude.")
     st.code(traceback.format_exc())
@@ -98,7 +110,8 @@ if new_rows:
         r["impulses"] = len(set(prev.get("impulse_times") or []) | ({str(r["impulse_time"])} if r.get("impulse_time") is not None else set()))
     new_ranked = rank_1_to_5(pd.DataFrame(new_rows), cfg["weights"], cfg)
     new_rows = new_ranked.to_dict("records")
-tracker.ingest(store, new_rows, now_ts)
+if SCAN_MODE != "cron":
+    tracker.ingest(store, new_rows, now_ts)
 # entry_* stays frozen at the FIRST fire — no upgrades from later information
 prices, btc_now = {}, None
 try:
@@ -108,8 +121,9 @@ try:
 except Exception:
     pass
 prices.update({("stock", t): p for t, p in stock_src.last_prices([k[1] for k in store if k[0] == "stock"]).items()})
-tracker.mark(store, prices, now_ts, cfg["retain_hours"], btc_now)
-tracker.save(store)
+if SCAN_MODE != "cron":
+    tracker.mark(store, prices, now_ts, cfg["retain_hours"], btc_now)
+    tracker.save(store)
 df_all = pd.DataFrame(list(store.values()))
 if not df_all.empty and "archived" not in df_all:
     df_all["archived"] = False
@@ -127,7 +141,7 @@ if not df.empty:
 
 now_local = datetime.now(ZoneInfo(cfg["timezone"])).strftime("%H:%M:%S %Z")
 seeding = len(next(iter(price_ledger().values()), [])) <= 1
-st.caption(f"Last scan {now_local} · {len(new) if not new.empty else 0} new/refired · {len(df)} on screen (last {cfg['retain_hours']}h) · {n_archived} archived · {len(df_all)} total in journal" + (" · warming up price ledger (first refresh seeds top-volume perps)" if seeding else ""))
+st.caption(("🛰 scanning via GitHub Actions · " if SCAN_MODE == "cron" else "") + f"Last scan {now_local} · {len(new) if not new.empty else 0} new/refired · {len(df)} on screen (last {cfg['retain_hours']}h) · {n_archived} archived · {len(df_all)} total in journal" + (" · warming up price ledger (first refresh seeds top-volume perps)" if seeding else ""))
 
 with st.expander("Diagnostics — what the scanner checked this refresh", expanded=df.empty):
     c1, c2, c3, c4 = st.columns(4)
@@ -188,6 +202,12 @@ with st.expander("🧪 Model fit — day-blocked cross-validation on the full jo
     else:
         st.info("No validated model yet — score uses the three hand rules (VWAP reclaim, ≥10x vol, OI inflow).")
 df = fit.predict(ms.get("models", {}), df)
+LIVE_H = next((h for h in ("1h", "4h", "15m") if f"model_p_{h}" in df and ms.get("models", {}).get(f"{h}:win")), None)
+if LIVE_H:
+    df["potential"] = (pd.to_numeric(df[f"model_p_{LIVE_H}"], errors="coerce") * 100).round(0)
+    df.loc[df["side"] == "NONE", "potential"] = 0
+    df["act"] = (df["potential"] >= 65) & (df["side"] == "LONG")
+    st.caption(f"Ranking = validated {LIVE_H} model probability (AUC {ms['models'][f'{LIVE_H}:win']['auc']:.2f}, n={ms['models'][f'{LIVE_H}:win']['n']}). IGNITION at ≥65%.")
 
 # ---- effectiveness ----
 with st.expander("📊 Scanner effectiveness (signed: + means the original call was right)", expanded=False):
@@ -204,7 +224,7 @@ if min_potential:
 
 act = df[df["act"]]
 if len(act):
-    st.error("🔥 IGNITION (score ≥40 = clean signal + ≥10x vol or OI inflow; 15m–1h horizon): " + ", ".join(f"{t} {s}" for t, s in zip(act["ticker"], act["side"])))
+    st.error(("🔥 IGNITION (model P(win) ≥65%): " if LIVE_H else "🔥 IGNITION (score ≥40 = clean signal + ≥10x vol or OI inflow; 15m–1h horizon): ") + ", ".join(f"{t} {s}" for t, s in zip(act["ticker"], act["side"])))
 dt = df[df["side"] == "NONE"]
 if len(dt):
     st.warning("🚫 DON'T TOUCH: " + ", ".join(dt["ticker"]))

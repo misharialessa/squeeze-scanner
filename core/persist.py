@@ -24,12 +24,12 @@ def _ensure_branch(tok, repo):
     requests.post(f"{api}/git/refs", headers=_hdr(tok), json={"ref": f"refs/heads/{BRANCH}", "sha": sha}, timeout=15)
 
 
-def load_remote() -> dict | None:
+def load_remote(path: str = PATH) -> dict | None:
     tok, repo = _cfg()
     if not tok:
         return None
     try:
-        r = requests.get(f"https://api.github.com/repos/{repo}/contents/{PATH}", params={"ref": BRANCH}, headers=_hdr(tok), timeout=15)
+        r = requests.get(f"https://api.github.com/repos/{repo}/contents/{path}", params={"ref": BRANCH}, headers=_hdr(tok), timeout=15)
         if r.status_code != 200:
             return None
         return json.loads(base64.b64decode(r.json()["content"]))
@@ -37,16 +37,16 @@ def load_remote() -> dict | None:
         return None
 
 
-def push_remote(data: dict, min_interval: int = 300, force: bool = False) -> str | None:
-    """Commit the journal; throttled. Returns an error string or None."""
+def push_remote(data: dict, min_interval: int = 300, force: bool = False, path: str = PATH) -> str | None:
+    """Commit a JSON file to the journal branch; throttled unless force. Returns an error string or None."""
     tok, repo = _cfg()
     if not tok:
         return "no GITHUB_TOKEN/GITHUB_REPO"
-    if not force and time.time() - _last_push["t"] < min_interval:
+    if not force and path == PATH and time.time() - _last_push["t"] < min_interval:
         return None
     try:
         _ensure_branch(tok, repo)
-        url = f"https://api.github.com/repos/{repo}/contents/{PATH}"
+        url = f"https://api.github.com/repos/{repo}/contents/{path}"
         cur = requests.get(url, params={"ref": BRANCH}, headers=_hdr(tok), timeout=15)
         body = {"message": f"journal {time.strftime('%Y-%m-%d %H:%M')}", "branch": BRANCH,
                 "content": base64.b64encode(json.dumps(data).encode()).decode()}
@@ -54,7 +54,7 @@ def push_remote(data: dict, min_interval: int = 300, force: bool = False) -> str
             body["sha"] = cur.json()["sha"]
         r = requests.put(url, headers=_hdr(tok), json=body, timeout=20)
         r.raise_for_status()
-        _last_push["t"] = time.time()
+        if path == PATH: _last_push["t"] = time.time()
         return None
     except Exception as e:
         return str(e)[:160]
