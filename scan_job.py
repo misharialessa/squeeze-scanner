@@ -23,9 +23,12 @@ def save_ledger(ledger: dict):
     if err: print("ledger push:", err)
 
 
-def main():
-    cfg = yaml.safe_load(open("config.yaml"))
-    store, ledger, diag, t0 = tracker.load(), load_ledger(), {}, time.time()
+STATUS_PATH = "last_run.json"
+
+
+def cycle(cfg, store, ledger, push: bool) -> dict:
+    """One scan cycle (one app refresh). Commits journal/ledger/status only when push=True."""
+    diag, t0 = {}, time.time()
     new = run(cfg, ledger, diag)
     now = time.time()
     rows = [] if new.empty else new.to_dict("records")
@@ -47,12 +50,21 @@ def main():
     except Exception as e:
         print("stock prices:", e)
     tracker.mark(store, prices, now, cfg["retain_hours"], btc)
-    err = tracker.save(store, force_remote=True)
-    save_ledger(ledger)
-    print(json.dumps({"new": len(rows), "journal": len(store), "secs": round(time.time() - t0),
-                      "diag": {k: v for k, v in diag.items() if not isinstance(v, list)}, "push_err": err}, default=str))
-    # daily model fit at ~03:00 UTC
-    if time.gmtime(now).tm_hour == 3 and time.gmtime(now).tm_min < 10 and len(store) >= 100:
+    status = {"ts": now, "new": len(rows), "journal": len(store), "secs": round(time.time() - t0),
+              "diag": {k: v for k, v in diag.items() if not isinstance(v, list)},
+              "near": (diag.get("near") or [])[:10], "stock_near": (diag.get("stock_near") or [])[:10], "push_err": None}
+    if push:
+        status["push_err"] = tracker.save(store, force_remote=True)
+        save_ledger(ledger)
+        persist.push_remote(status, force=True, path=STATUS_PATH)
+    else:
+        tracker.save(store)
+    print(json.dumps({k: v for k, v in status.items() if k not in ("near", "stock_near")}, default=str), flush=True)
+    return status
+
+
+def daily_fit(store, now):
+    if time.gmtime(now).tm_hour == 3 and time.gmtime(now).tm_min < 2 and len(store) >= 100:
         try:
             rep, val = fit.run(pd.DataFrame(list(store.values())), targets=("win", "tp"))
             print(rep.to_string(index=False))
@@ -63,6 +75,34 @@ def main():
                 print("validated:", list(val))
         except Exception as e:
             print("fit:", e)
+
+
+def main():
+    cfg = yaml.safe_load(open("config.yaml"))
+    minutes = float(os.getenv("RUN_MINUTES", "345"))          # under GitHub's 6h job limit
+    every = int(os.getenv("CYCLE_SECONDS", str(cfg.get("refresh_seconds", 60))))
+    store, ledger = tracker.load(), load_ledger()
+    t_end, i = time.time() + minutes * 60, 0
+    while time.time() < t_end:
+        t0 = time.time()
+        try:
+            cycle(cfg, store, ledger, push=(i % 5 == 0))      # commit every ~5 min
+            daily_fit(store, time.time())
+        except Exception as e:
+            print("cycle error:", repr(e), flush=True)
+        i += 1
+        time.sleep(max(5, every - (time.time() - t0)))
+    try:
+        cycle(cfg, store, ledger, push=True)                  # final commit before hand-off
+    except Exception as e:
+        print("final cycle error:", repr(e), flush=True)
+    tok, repo = os.getenv("ACTIONS_TOKEN"), os.getenv("CODE_REPO")
+    if tok and repo:                                          # start the next run right away; hourly schedule is the backup
+        import requests
+        r = requests.post(f"https://api.github.com/repos/{repo}/actions/workflows/scan.yml/dispatches",
+                          headers={"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"},
+                          json={"ref": "main"}, timeout=20)
+        print("hand-off:", r.status_code, flush=True)
 
 
 if __name__ == "__main__":

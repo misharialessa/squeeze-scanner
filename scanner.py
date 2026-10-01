@@ -143,6 +143,16 @@ now_local = datetime.now(ZoneInfo(cfg["timezone"])).strftime("%H:%M:%S %Z")
 seeding = len(next(iter(price_ledger().values()), [])) <= 1
 st.caption(("🛰 scanning via GitHub Actions · " if SCAN_MODE == "cron" else "") + f"Last scan {now_local} · {len(new) if not new.empty else 0} new/refired · {len(df)} on screen (last {cfg['retain_hours']}h) · {n_archived} archived · {len(df_all)} total in journal" + (" · warming up price ledger (first refresh seeds top-volume perps)" if seeding else ""))
 
+if SCAN_MODE == "cron":
+    _age = (now_ts - diag["job_ts"]) / 60 if diag.get("job_ts") else None
+    if _age is None:
+        st.error("🛰 No scanner status yet — the GitHub job has not reported. Check that the workflow is enabled and run it once.")
+    elif _age > 15:
+        st.error(f"🛰 Scanner last reported {_age:.0f} min ago — it looks stopped. Runs hand off every ~6h; the hourly watchdog restarts it.")
+    else:
+        st.success(f"🛰 Scanner running on GitHub · last cycle {_age:.0f} min ago · {diag.get('job_new', 0)} new this cycle"
+                   + (f" · push error: {diag['job_push_err']}" if diag.get("job_push_err") else ""))
+
 with st.expander("Diagnostics — what the scanner checked this refresh", expanded=df.empty):
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Crypto candidates", diag.get("crypto_candidates", 0))
@@ -171,7 +181,7 @@ if df.empty and not df_all.empty:
         st.dataframe(tracker.effectiveness(df_all), hide_index=True, use_container_width=True)
         st.download_button("Download full journal CSV", df_all.drop(columns=["flags"], errors="ignore").to_csv(index=False), "signals_journal.csv", key="dl_empty")
 if df.empty:
-    st.info("Nothing retained yet. Check Diagnostics above: if candles fetched is 0, Hyperliquid is rate-limiting; "
+    st.info("Nothing on screen in the last retention window. Check Diagnostics above: if candles fetched is 0, Hyperliquid is rate-limiting; "
             "if near-misses show small moves, the market is simply quiet.")
     _wait_and_rerun()
 

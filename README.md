@@ -22,6 +22,11 @@ See the docstring at the top of `core/metrics.py` — one decorated function, do
 - CoinGlass response shape is inferred from docs; if the liquidation columns stay empty, send me one raw JSON response and I'll fix the parser.
 - "Crossing 10%" alerting is a refresh-by-refresh check; next version can add a Telegram push on first cross.
 
+## Two-repo layout (public code, private journal)
+- `squeeze-scanner` (public): the code + workflow. Unlimited Actions minutes.
+- `squeeze-journal` (private): `journal` branch holds signals_journal.json, ledger.json, fit_report.json, model_weights.json.
+Both the workflow (`JOURNAL_REPO` secret) and Streamlit (`GITHUB_REPO` secret) point at the private repo.
+
 ## Continuous scanning with GitHub Actions (recommended)
 The Streamlit app only runs while a browser tab is open. `scan_job.py` + `.github/workflows/scan.yml`
 run the same scan on GitHub's servers every 5 minutes and write to the `journal` branch.
