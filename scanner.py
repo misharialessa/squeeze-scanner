@@ -148,7 +148,8 @@ st.caption(("🛰 scanning via GitHub Actions · " if SCAN_MODE == "cron" else "
 if SCAN_MODE == "cron":
     _age = (now_ts - diag["job_ts"]) / 60 if diag.get("job_ts") else None
     if _age is None:
-        st.error("🛰 No scanner status yet — the GitHub job has not reported. Check that the workflow is enabled and run it once.")
+        st.error("🛰 No scanner status yet — the GitHub job has not reported, or the app cannot read the journal repo. "
+                 f"last_run.json: {persist.load_status('last_run.json')} · journal: {persist.load_status()}")
     elif _age > 15:
         st.error(f"🛰 Scanner last reported {_age:.0f} min ago — it looks stopped. Runs hand off every ~6h; the hourly watchdog restarts it.")
     else:
