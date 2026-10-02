@@ -1,15 +1,18 @@
 name: scan
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "7 * * * *"
   workflow_dispatch:
+permissions:
+  actions: write
+  contents: read
 concurrency:
   group: scan
   cancel-in-progress: false
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 358
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,8 +22,11 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python scan_job.py
         env:
+          RUN_MINUTES: "345"
           GITHUB_TOKEN: ${{ secrets.JOURNAL_TOKEN }}
-          GITHUB_REPO: ${{ github.repository }}
+          GITHUB_REPO: ${{ secrets.JOURNAL_REPO }}
+          ACTIONS_TOKEN: ${{ github.token }}
+          CODE_REPO: ${{ github.repository }}
           CMC_API_KEY: ${{ secrets.CMC_API_KEY }}
           CRYPTOPANIC_API_KEY: ${{ secrets.CRYPTOPANIC_API_KEY }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
