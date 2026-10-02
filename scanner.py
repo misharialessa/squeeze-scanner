@@ -91,6 +91,11 @@ try:
         if remote:
             hit_store().clear(); hit_store().update(remote)
         new = pd.DataFrame()
+        job = persist.load_remote("last_run.json") or {}
+        if job:
+            diag.update(job.get("diag", {}))
+            diag["near"], diag["stock_near"] = job.get("near", []), job.get("stock_near", [])
+            diag["job_ts"], diag["job_new"], diag["job_push_err"] = job.get("ts"), job.get("new"), job.get("push_err")
         rep = persist.load_remote("fit_report.json")
         if rep: models_store()["report"] = pd.DataFrame(rep)
         mw = persist.load_remote(fit.MODEL_FILE)
