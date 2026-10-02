@@ -38,6 +38,8 @@ def _wait_and_rerun():
     st.stop()
 
 
+SCAN_MODE = os.getenv("SCAN_MODE", "app").strip().strip('"').lower()          # "cron" = GitHub Actions scans; app only displays
+
 st.set_page_config(page_title="Squeeze Scanner", layout="wide")
 st.title("Momentum / Squeeze Scanner")
 
@@ -60,6 +62,7 @@ with st.sidebar:
     st.subheader("Journal")
     cfg["retain_hours"] = int(st.number_input("Keep hits on screen (hours)", 1, 720, int(cfg["retain_hours"])))
     st.caption(persist.status())
+    st.caption(f"Mode: **{SCAN_MODE}** · repo: {os.getenv('GITHUB_REPO') or '—'}")
     if st.button("Push journal to GitHub now"):
         err = tracker.save(hit_store(), force_remote=True)
         if err:
@@ -81,7 +84,6 @@ with st.sidebar:
 
 
 
-SCAN_MODE = os.getenv("SCAN_MODE", "app")          # "cron" = GitHub Actions scans; app only displays
 diag = {}
 try:
     if SCAN_MODE == "cron":
@@ -167,18 +169,18 @@ with st.expander("Diagnostics — what the scanner checked this refresh", expand
     sn = pd.DataFrame(diag.get("stock_near", []))
     if len(sn):
         st.caption("Stocks closest to trigger:")
-        st.dataframe(sn.sort_values("move_pct", ascending=False).head(10), hide_index=True, use_container_width=True,
+        st.dataframe(sn.sort_values("move_pct", ascending=False).head(10), hide_index=True, width="stretch",
                      column_config={"move_pct": st.column_config.NumberColumn("Move %", format="%.2f%%"), "vol_x": st.column_config.NumberColumn("Vol ×", format="%.1fx")})
     nm = pd.DataFrame(diag.get("near_misses", []))
     if len(nm):
         st.caption("Closest to trigger (move over last 2 candles · spike volume ÷ 3-day per-candle avg):")
-        st.dataframe(nm.sort_values("move_pct", ascending=False).head(15), hide_index=True, use_container_width=True,
+        st.dataframe(nm.sort_values("move_pct", ascending=False).head(15), hide_index=True, width="stretch",
                      column_config={"move_pct": st.column_config.NumberColumn("Move %", format="%.2f%%"),
                                     "vol_x": st.column_config.NumberColumn("Vol ×", format="%.1fx")})
 
 if df.empty and not df_all.empty:
     with st.expander("📊 Scanner effectiveness (all history)", expanded=True):
-        st.dataframe(tracker.effectiveness(df_all), hide_index=True, use_container_width=True)
+        st.dataframe(tracker.effectiveness(df_all), hide_index=True, width="stretch")
         st.download_button("Download full journal CSV", df_all.drop(columns=["flags"], errors="ignore").to_csv(index=False), "signals_journal.csv", key="dl_empty")
 if df.empty:
     st.info("Nothing on screen in the last retention window. Check Diagnostics above: if candles fetched is 0, Hyperliquid is rate-limiting; "
@@ -206,7 +208,7 @@ with st.expander("🧪 Model fit — day-blocked cross-validation on the full jo
             except Exception:
                 st.code(traceback.format_exc())
     if ms.get("report") is not None:
-        st.dataframe(ms["report"], hide_index=True, use_container_width=True)
+        st.dataframe(ms["report"], hide_index=True, width="stretch")
     if ms.get("models"):
         st.success("Live models: " + ", ".join(f"{k} (AUC {v['auc']:.2f}, n={v['n']})" for k, v in ms["models"].items()))
     else:
@@ -225,7 +227,7 @@ with st.expander("📊 Scanner effectiveness (signed: + means the original call 
     if eff.empty:
         st.caption("Needs signals that have aged past the first checkpoint (15 min).")
     else:
-        st.dataframe(eff, hide_index=True, use_container_width=True)
+        st.dataframe(eff, hide_index=True, width="stretch")
     st.download_button("Download full journal CSV", df_all.drop(columns=["flags"], errors="ignore").to_csv(index=False), "signals_journal.csv")
 if min_rvol:
     df = df[df["rvol"].fillna(0) >= min_rvol]
@@ -290,7 +292,7 @@ if ext: styled = styled.map(lambda v: _c(v, [(lambda x: x > 0, LG), (lambda x: x
 
 st.dataframe(
     styled,
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
     column_config={
         "entry_price": "Entry px", "cur_price": "Now px", "perf_pct": "Perf (signed)", "mfe_pct": "MFE", "mae_pct": "MAE",
