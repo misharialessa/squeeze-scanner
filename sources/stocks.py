@@ -95,8 +95,41 @@ def movers(cap="midunder", min_move=2, max_candidates=40, min_cap_usd=5e7, max_c
     return pd.DataFrame(), info
 
 
-def detail(ticker: str) -> dict:
-    """Float, shares outstanding, short interest, 5m intraday bars, prior daily volumes, news."""
+def _fh(path, **params):
+    fk = os.getenv("FINNHUB_API_KEY")
+    if not fk:
+        raise RuntimeError("no FINNHUB_API_KEY")
+    r = requests.get(f"https://finnhub.io/api/v1/{path}", params={**params, "token": fk}, timeout=12)
+    if r.status_code != 200 or not r.text.strip():
+        raise RuntimeError(f"finnhub {path} {r.status_code}")
+    return r.json()
+
+
+def _detail_finnhub(ticker: str) -> dict:
+    """Finnhub free tier: 5m candles (30 days), daily candles, profile (market cap, shares out), news. No float/short %."""
+    import time as _t
+    now = int(_t.time())
+    c5 = _fh("stock/candle", symbol=ticker, resolution="5", **{"from": now - 6 * 86400, "to": now})
+    if c5.get("s") != "ok":
+        raise RuntimeError("no 5m candles")
+    intra = pd.DataFrame({"open": c5["o"], "high": c5["h"], "low": c5["l"], "close": c5["c"], "volume": c5["v"]},
+                         index=pd.to_datetime(c5["t"], unit="s", utc=True).tz_convert("America/New_York"))
+    cd = _fh("stock/candle", symbol=ticker, resolution="D", **{"from": now - 20 * 86400, "to": now})
+    prior_daily = pd.Series(cd["v"][:-1][-5:], dtype=float) if cd.get("s") == "ok" and len(cd.get("v", [])) > 1 else pd.Series(dtype=float)
+    prof = {}
+    try: prof = _fh("stock/profile2", symbol=ticker)
+    except Exception: pass
+    news = []
+    try:
+        d0 = _t.strftime("%Y-%m-%d", _t.gmtime(now - 3 * 86400)); d1 = _t.strftime("%Y-%m-%d", _t.gmtime(now))
+        news = [(n.get("headline"), n.get("url")) for n in _fh("company-news", symbol=ticker, **{"from": d0, "to": d1})[:3]]
+    except Exception: pass
+    mc = prof.get("marketCapitalization"); so = prof.get("shareOutstanding")
+    return {"market_cap": mc * 1e6 if mc else None, "float_shares": None, "float_pct": None, "short_pct_float": None,
+            "shares_outstanding": so * 1e6 if so else None, "bars_5m": intra, "prior_daily_vols": prior_daily, "news": news}
+
+
+def _detail_yf(ticker: str) -> dict:
     t = yf.Ticker(ticker)
     info = t.info or {}
     intra = t.history(period="5d", interval="5m", prepost=True)
@@ -105,21 +138,33 @@ def detail(ticker: str) -> dict:
     prior_daily = daily["Volume"].iloc[:-1].tail(5) if len(daily) > 1 else pd.Series(dtype=float)
     fl, so = info.get("floatShares"), info.get("sharesOutstanding")
     news = [(n.get("title"), n.get("link")) for n in (t.news or [])[:3]]
-    return {
-        "market_cap": info.get("marketCap"),
-        "float_shares": fl,
-        "float_pct": round(fl / so * 100, 1) if fl and so else None,
-        "short_pct_float": info.get("shortPercentOfFloat"),
-        "bars_5m": intra,
-        "prior_daily_vols": prior_daily,
-        "news": news,
-    }
+    return {"market_cap": info.get("marketCap"), "float_shares": fl, "float_pct": round(fl / so * 100, 1) if fl and so else None,
+            "short_pct_float": info.get("shortPercentOfFloat"), "bars_5m": intra, "prior_daily_vols": prior_daily, "news": news}
+
+
+def detail(ticker: str) -> dict:
+    """Float, shares, 5m bars, prior daily volumes, news. Finnhub first (works from cloud IPs); yfinance fallback."""
+    try:
+        return _detail_finnhub(ticker)
+    except Exception:
+        return _detail_yf(ticker)
 
 
 def last_prices(tickers: list[str]) -> dict:
-    """Latest price for a batch of tickers (one download)."""
+    """Latest price for a batch of tickers. Finnhub quotes (parallel) first; yfinance batch fallback."""
     if not tickers:
         return {}
+    if os.getenv("FINNHUB_API_KEY"):
+        import concurrent.futures as cf
+        def q(t):
+            try:
+                d = _fh("quote", symbol=t); return (t, float(d["c"])) if d.get("c") else None
+            except Exception:
+                return None
+        with cf.ThreadPoolExecutor(max_workers=10) as ex:
+            out = dict(x for x in ex.map(q, tickers) if x)
+        if out:
+            return out
     try:
         data = yf.download(tickers, period="1d", interval="5m", prepost=True, progress=False, group_by="ticker", threads=True)
         out = {}
