@@ -24,17 +24,31 @@ def _ensure_branch(tok, repo):
     requests.post(f"{api}/git/refs", headers=_hdr(tok), json={"ref": f"refs/heads/{BRANCH}", "sha": sha}, timeout=15)
 
 
+_last_load: dict = {}          # path -> human-readable result of the last load attempt (for diagnostics)
+
+
 def load_remote(path: str = PATH) -> dict | None:
     tok, repo = _cfg()
     if not tok:
-        return None
+        _last_load[path] = "no token/repo configured"; return None
     try:
         r = requests.get(f"https://api.github.com/repos/{repo}/contents/{path}", params={"ref": BRANCH}, headers=_hdr(tok), timeout=15)
         if r.status_code != 200:
-            return None
-        return json.loads(base64.b64decode(r.json()["content"]))
-    except Exception:
-        return None
+            _last_load[path] = f"HTTP {r.status_code} for {repo}@{BRANCH}/{path}: {r.text[:120]}"; return None
+        meta = r.json()
+        if meta.get("content"):
+            data = json.loads(base64.b64decode(meta["content"]))
+        else:                                              # >1 MB: API omits inline content → use the raw download URL
+            raw = requests.get(meta["download_url"], headers=_hdr(tok), timeout=30)
+            raw.raise_for_status(); data = raw.json()
+        _last_load[path] = f"ok ({meta.get('size', '?')} bytes)"
+        return data
+    except Exception as e:
+        _last_load[path] = f"error: {str(e)[:150]}"; return None
+
+
+def load_status(path: str = PATH) -> str:
+    return _last_load.get(path, "not attempted")
 
 
 def push_remote(data: dict, min_interval: int = 300, force: bool = False, path: str = PATH) -> str | None:
