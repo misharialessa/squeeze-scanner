@@ -62,8 +62,11 @@ def macd_state(bars: pd.DataFrame, cfg: dict) -> dict:
     }
 
 
-def impulse(bars_5m: pd.DataFrame, min_move_pct: float, candles: int, vol_multiple: float, lookback_days: int) -> dict | None:
-    """Sudden move: ≥min_move% over the last 1..candles closed bars AND spike-candle volume ≥ multiple × avg per-candle volume."""
+def impulse(bars_5m: pd.DataFrame, min_move_pct: float, candles: int, vol_multiple: float, lookback_days: int,
+            scan_back: int = 1) -> dict | None:
+    """Sudden move: ≥min_move% over 1..candles consecutive bars AND spike-candle volume ≥ multiple × avg per-candle volume.
+    scan_back: how many bar-endings to test (1 = only the latest bars; 12 = any window ending in the last hour, so a move
+    that happened while the collector was restarting is still caught, stamped with its real impulse_time and late_min)."""
     n = int(lookback_days * 24 * 12)
     if bars_5m is None or len(bars_5m) < 30:
         return None
@@ -71,15 +74,18 @@ def impulse(bars_5m: pd.DataFrame, min_move_pct: float, candles: int, vol_multip
     avg_vol = float(hist["volume"].mean()) if len(hist) else 0
     if not avg_vol:
         return None
-    last = bars_5m.iloc[-candles:]
     best = None
-    for k in range(1, candles + 1):
-        seg = last.iloc[-k:]
-        move = (float(seg["close"].iloc[-1]) / float(seg["open"].iloc[0]) - 1) * 100
-        vmult = float(seg["volume"].max()) / avg_vol
-        if move >= min_move_pct and vmult >= vol_multiple and (best is None or move > best["impulse_pct"]):
-            best = {"impulse_pct": round(move, 2), "impulse_candles": k, "impulse_vol_x": round(vmult, 1),
-                    "impulse_time": seg.index[0]}
+    for back in range(0, min(scan_back, len(bars_5m) - candles)):
+        last = bars_5m.iloc[len(bars_5m) - candles - back: len(bars_5m) - back]
+        for k in range(1, candles + 1):
+            seg = last.iloc[-k:]
+            move = (float(seg["close"].iloc[-1]) / float(seg["open"].iloc[0]) - 1) * 100
+            vmult = float(seg["volume"].max()) / avg_vol
+            if move >= min_move_pct and vmult >= vol_multiple and (best is None or move > best["impulse_pct"]):
+                best = {"impulse_pct": round(move, 2), "impulse_candles": k, "impulse_vol_x": round(vmult, 1),
+                        "impulse_time": seg.index[0], "late_min": int(back * 5)}
+        if best is not None and back == 0:
+            break                                     # live fire wins; only look back when the latest bars are quiet
     return best
 
 

@@ -17,7 +17,8 @@ def _run_metrics(hit, asset, ctx):
 
 def _impulse(b5, cfg, asset="crypto"):
     i = cfg["stock_impulse"] if asset == "stock" else cfg["impulse"]
-    return impulse(b5, i["min_move_pct"], i["candles"], i["vol_multiple"], i["avg_lookback_days"])
+    return impulse(b5, i["min_move_pct"], i["candles"], i["vol_multiple"], i["avg_lookback_days"],
+                   scan_back=int(i.get("catch_up_candles", 1)))
 
 
 def regime(snap: pd.DataFrame) -> dict:
@@ -67,11 +68,14 @@ def crypto_candidates(cfg, ledger: dict, snap: pd.DataFrame) -> list[str]:
             cands.add(coin)
     for _, r in snap.iterrows():
         _oi_change(ledger, r["ticker"], r["open_interest"], now)
-    if len(ledger.get(next(iter(mids)), [])) <= 1:                                     # cold start → seed
-        cands |= set(snap.nlargest(cfg["impulse"]["cold_start_assets"], "vol_24h_usd")["ticker"])
+    imp = cfg["impulse"]
+    # Always inspect: the most liquid names, and anything already moving on the day. The ledger pre-filter alone
+    # misses a coin that ran while the collector was restarting (SAND, Oct 2–3) because the ledger starts empty.
+    cands |= set(snap.nlargest(int(imp.get("always_check_top_volume", imp.get("cold_start_assets", 25))), "vol_24h_usd")["ticker"])
+    cands |= set(snap[snap["change_pct"].abs() >= float(imp.get("always_check_24h_pct", 5))]["ticker"])
     if cfg["daily_movers"]["enabled"]:
         cands |= set(snap[snap["change_pct"].abs() >= cfg["daily_movers"]["move_pct"]]["ticker"])
-    return sorted(cands)
+    return sorted(c for c in cands if c in set(snap["ticker"]))
 
 
 def _near_miss(b5, cfg, asset="crypto"):
@@ -91,11 +95,10 @@ def scan_crypto(cfg, ledger: dict, diag: dict) -> list[dict]:
     snap = hl.universe_snapshot().set_index("ticker")
     reg = regime(snap.reset_index())
     cands = crypto_candidates(cfg, ledger, snap.reset_index())
-    diag.update(crypto_candidates=len(cands), candles_ok=0, candles_err=0, last_err=None, near_misses=[])
+    diag.update(crypto_candidates=len(cands), candles_ok=0, candles_err=0, last_err=None, near_misses=[],
+                top_movers_24h=" · ".join(f"{t} {c:+.0f}%" for t, c in snap["change_pct"].dropna().nlargest(8).items()))
     hits = []
     for coin in cands:
-        if coin not in snap.index:
-            continue
         try:
             b5 = hl.candles(coin, "5m", int(cfg["impulse"]["avg_lookback_days"] * 288) + 10)
             diag["candles_ok"] += 1
