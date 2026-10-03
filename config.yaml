@@ -6,7 +6,11 @@ impulse:                         # PRIMARY TRIGGER — sudden move + volume on 5
   candles: 2
   vol_multiple: 2.5              # candle volume ÷ avg per-candle volume (reduced for sensitivity)
   avg_lookback_days: 3           # range 2–4
-  cold_start_assets: 50          # crypto: increased to capture more coins in seed pool
+  cold_start_assets: 50          # kept for the app's local (non-cron) mode
+  always_check_top_volume: 50    # collector: inspect candles of the 50 most liquid perps every cycle
+  always_check_24h_pct: 5        # collector: and of anything already ±5% on the day, ledger or not
+  catch_up_candles: 12           # collector: test every window ending in the last 60 min — a move that fired while
+                                 #   the job was restarting is still journaled, stamped with its true time + late_min
 daily_movers:                    # SECONDARY TRIGGER — catch 24h big movers (like SAND)
   enabled: true                  # GitHub collects these; app decides what to show
   move_pct: 15                   # capture moves ≥15% over 24h (user can filter in app)

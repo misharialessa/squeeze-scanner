@@ -179,6 +179,8 @@ with st.expander("Diagnostics — what the scanner checked this refresh", expand
     c4.metric("Stock candidates", diag.get("stock_candidates", "—"))
     st.caption(f"Stocks: source = {diag.get('stock_source') or 'none'} · bars checked {diag.get('stock_checked', 0)} · impulses {diag.get('stock_impulses', 0)}"
                + (" · US market closed (16:30–23:00 Kuwait)" if not (13 <= datetime.now(ZoneInfo('UTC')).hour < 20) else ""))
+    if diag.get("top_movers_24h"):
+        st.caption(f"Biggest 24h movers on Hyperliquid right now (all are inspected every cycle): {diag['top_movers_24h']}")
     for k in ("last_err", "scan_crypto_error", "scan_stocks_error", "stock_error"):
         if diag.get(k):
             st.code(f"{k}: {diag[k]}")
