@@ -44,43 +44,53 @@ st.set_page_config(page_title="Squeeze Scanner", layout="wide")
 st.title("Momentum / Squeeze Scanner")
 
 with st.sidebar:
-    st.header("Filters")
-    cfg["crypto"]["enabled"] = st.checkbox("Crypto (Hyperliquid perps)", cfg["crypto"]["enabled"])
-    cfg["stocks"]["enabled"] = st.checkbox("US small caps", cfg["stocks"]["enabled"])
-    st.subheader("Impulse trigger (5m)")
-    cfg["impulse"]["min_move_pct"] = st.number_input("Min move % over the window", 0.05, 100.0, float(cfg["impulse"]["min_move_pct"]), 0.05, format="%.2f")
-    cfg["impulse"]["candles"] = int(st.number_input("Candles in window (5m each)", 1, 48, int(cfg["impulse"]["candles"])))
-    cfg["impulse"]["vol_multiple"] = st.number_input("Spike candle vol ≥ × avg", 1.0, 100.0, float(cfg["impulse"]["vol_multiple"]), 0.5)
-    cfg["impulse"]["avg_lookback_days"] = int(st.number_input("Avg volume over days (max 15)", 1, 15, int(cfg["impulse"]["avg_lookback_days"])))
-    st.subheader("Stock impulse (5m)")
-    si = cfg["stock_impulse"]
-    si["min_move_pct"] = st.number_input("Stocks: min move %", 0.05, 100.0, float(si["min_move_pct"]), 0.05, format="%.2f", key="s_mv")
-    si["candles"] = int(st.number_input("Stocks: candles in window", 1, 48, int(si["candles"]), key="s_cd"))
-    si["vol_multiple"] = st.number_input("Stocks: spike vol ≥ × avg", 1.0, 100.0, float(si["vol_multiple"]), 0.5, key="s_vx")
-    si["avg_lookback_days"] = int(st.number_input("Stocks: avg volume over days", 1, 20, int(si["avg_lookback_days"]), key="s_lb"))
-    cfg["stocks"]["min_market_cap_usd"] = st.number_input("Stocks: min market cap ($M)", 0, 100000, int(cfg["stocks"]["min_market_cap_usd"] / 1e6), key="s_mc") * 1e6
-    st.subheader("Journal")
-    cfg["retain_hours"] = int(st.number_input("Keep hits on screen (hours)", 1, 720, int(cfg["retain_hours"])))
-    st.caption(persist.status())
-    st.caption(f"Mode: **{SCAN_MODE}** · repo: {os.getenv('GITHUB_REPO') or '—'}")
-    if st.button("Push journal to GitHub now"):
-        err = tracker.save(hit_store(), force_remote=True)
-        if err:
-            st.error(err)
-        else:
-            st.success("Pushed")
-    if st.button("Clear journal"):
-        hit_store().clear(); tracker.save(hit_store(), force_remote=True)
+    st.header("Display Filters (app-controlled)")
+    st.caption("⚙️ GitHub collects all impulses; you control what to see here")
+
+    st.subheader("Asset class")
+    show_crypto = st.checkbox("Crypto (Hyperliquid perps)", True)
+    show_stocks = st.checkbox("US small caps (optional)", False)
+
+    st.subheader("Signal quality (display filter)")
+    min_rvol = st.number_input("Min RVOL to show", 0.0, 1000.0, 0.0, 0.5)
+    min_potential = st.number_input("Min entry score to show", 0, 100, 0, 5)
+    cfg["retain_hours"] = int(st.number_input("Keep on screen (hours)", 1, 720, int(cfg["retain_hours"]), 6))
+
+    st.subheader("Crypto: Impulse criteria (for reference)")
+    st.caption(f"🛰 **GitHub uses these to collect signals** — adjust to refine what's collected")
+    cfg["impulse"]["min_move_pct"] = st.number_input("Min move % / 2 candles", 0.05, 100.0, float(cfg["impulse"]["min_move_pct"]), 0.1, format="%.2f")
+    cfg["impulse"]["vol_multiple"] = st.number_input("Spike volume ≥ × avg", 1.0, 100.0, float(cfg["impulse"]["vol_multiple"]), 0.5)
+    cfg["impulse"]["avg_lookback_days"] = int(st.number_input("Avg volume lookback (days)", 1, 15, int(cfg["impulse"]["avg_lookback_days"]), help="How far back to average volume"))
+
+    if show_stocks:
+        st.subheader("Stocks: Impulse criteria")
+        si = cfg["stock_impulse"]
+        si["min_move_pct"] = st.number_input("Stocks: min move %", 0.05, 100.0, float(si["min_move_pct"]), 0.1, format="%.2f", key="s_mv")
+        si["vol_multiple"] = st.number_input("Stocks: spike vol ≥ × avg", 1.0, 100.0, float(si["vol_multiple"]), 0.5, key="s_vx")
+        cfg["stocks"]["min_market_cap_usd"] = st.number_input("Stocks: min market cap ($M)", 0, 100000, int(cfg["stocks"]["min_market_cap_usd"] / 1e6), key="s_mc") * 1e6
+        cfg["stocks"]["min_day_change_pct"] = st.number_input("Stocks: day change ≥ % (pre-filter)", 0.0, 100.0, float(cfg["stocks"]["min_day_change_pct"]), 0.5)
+
+    st.subheader("Advanced")
     cfg["daily_movers"]["enabled"] = st.checkbox("Also show 24h/day movers", cfg["daily_movers"]["enabled"])
     if cfg["daily_movers"]["enabled"]:
         cfg["daily_movers"]["move_pct"] = st.number_input("Daily move ≥ %", 0.5, 500.0, float(cfg["daily_movers"]["move_pct"]), 0.5)
-    cfg["stocks"]["min_day_change_pct"] = st.number_input("Stocks: day change ≥ % (pre-filter)", 0.0, 100.0, float(cfg["stocks"]["min_day_change_pct"]), 0.5)
-    st.caption("CMC: " + ("✅ key set" if os.getenv("CMC_API_KEY") else "not set"))
-    min_rvol = st.number_input("Min RVOL to show", 0.0, 1000.0, 0.0)
-    min_potential = st.number_input("Min entry score to show", 0, 100, 0)
     auto = st.toggle("Auto-refresh", True)
-    if st.button("Refresh now"):
-        st.cache_data.clear()
+
+    st.divider()
+    st.subheader("Journal")
+    st.caption(persist.status())
+    st.caption(f"Mode: **{SCAN_MODE}** · {os.getenv('GITHUB_REPO') or '—'}")
+    st.caption("CMC: " + ("✅ key set" if os.getenv("CMC_API_KEY") else "not set"))
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Push now", use_container_width=True):
+            err = tracker.save(hit_store(), force_remote=True)
+            st.success("✅ Pushed") if not err else st.error(err)
+    with c2:
+        if st.button("Refresh", use_container_width=True):
+            st.cache_data.clear(); st.rerun()
+    if st.button("Clear journal", use_container_width=True):
+        hit_store().clear(); tracker.save(hit_store(), force_remote=True); st.success("Cleared")
 
 
 
@@ -197,6 +207,20 @@ df["potential"] = pd.to_numeric(df["entry_potential"], errors="coerce")
 df["side"] = df["entry_side"]
 df["act"] = (df["potential"] >= 40) & (df["side"] == "LONG")
 df["confirmed"] = pd.to_numeric(df.get("impulses", 1), errors="coerce").fillna(1) >= 2
+
+# Apply sidebar filters
+if not df.empty:
+    # Asset class filter
+    if show_crypto and not show_stocks:
+        df = df[df["asset"] == "crypto"]
+    elif show_stocks and not show_crypto:
+        df = df[df["asset"] == "stock"]
+    # Quality filters
+    if min_rvol > 0:
+        df = df[pd.to_numeric(df.get("rvol", 0), errors="coerce") >= min_rvol]
+    if min_potential > 0:
+        df = df[pd.to_numeric(df["potential"], errors="coerce") >= min_potential]
+
 df = df.sort_values(["live", "first_seen"], ascending=[False, False]).reset_index(drop=True)
 
 # ---- model fit (validated models only ever reach the score) ----

@@ -2,19 +2,14 @@ refresh_seconds: 60
 retain_hours: 48              # keep identified assets on screen this long
 timezone: Asia/Kuwait            # display time zone
 impulse:                         # PRIMARY TRIGGER — sudden move + volume on 5m candles
-  min_move_pct: 1.25              # over the last 1 or 2 candles
+  min_move_pct: 0.8              # over the last 1 or 2 candles (reduced: easier to catch moves)
   candles: 2
-  vol_multiple: 3.0              # candle volume ÷ avg per-candle volume (range 2–5)
+  vol_multiple: 2.5              # candle volume ÷ avg per-candle volume (reduced for sensitivity)
   avg_lookback_days: 3           # range 2–4
-  cold_start_assets: 25          # crypto: how many top-volume perps to seed with candles on first load
-stock_impulse:
-  min_move_pct: 2.0
-  candles: 3
-  vol_multiple: 3.0
-  avg_lookback_days: 5
-daily_movers:                    # OPTIONAL secondary trigger (old behaviour)
-  enabled: false
-  move_pct: 10
+  cold_start_assets: 50          # crypto: increased to capture more coins in seed pool
+daily_movers:                    # SECONDARY TRIGGER — catch 24h big movers (like SAND)
+  enabled: true                  # GitHub collects these; app decides what to show
+  move_pct: 15                   # capture moves ≥15% over 24h (user can filter in app)
 crypto:
   enabled: true
   heavy_move_pct: 30
